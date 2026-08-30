@@ -8,7 +8,8 @@
  * - usedTokensThreshold：已用上下文超过固定值（如 110000）
  *
  * 内置阈值由 pi 自身处理；本扩展只在存在严格更低的阈值时接管，
- * 在每次 turn 结束后检查用量并调用 ctx.compact()。
+ * 在与原生相同的两处检查点（每轮 turn 结束后、发送新消息前）检查用量
+ * 并调用 ctx.compact()。
  */
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -107,6 +108,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
+		checkAndTrigger(ctx);
+	});
+
+	// 对应 pi 原生"发送新消息前"的检查点：compact 失败遗留的超限状态在用户
+	// 下一次发送消息时立即重试，而不是等这轮 turn 结束。
+	pi.on("before_agent_start", (_event, ctx) => {
 		checkAndTrigger(ctx);
 	});
 

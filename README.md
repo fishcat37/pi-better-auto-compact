@@ -59,7 +59,7 @@ pi install git:github.com/<you>/better-auto-compact
 
 ## 工作原理
 
-- 本扩展不改变 pi 内置 auto-compact：内置阈值仍由 pi 在每轮 turn 结束后检查并触发。本扩展在每次 turn 结束（`turn_end`）和会话启动（`session_start`，覆盖 resume 到已超限会话的场景）读取 `ctx.getContextUsage()`，只有当**配置的扩展阈值严格低于内置阈值**（或内置已禁用）时才接管，调用 `ctx.compact()` 触发压缩。
+- 本扩展不改变 pi 内置 auto-compact：内置阈值仍由 pi 在其自己的检查点触发。扩展在与原生相同的两处检查点读取 `ctx.getContextUsage()`——每轮 turn 结束（`turn_end`）、发送新消息前（`before_agent_start`，compact 失败后用户重发消息即会立即重试）——外加会话启动（`session_start`，覆盖 resume 到已超限会话的场景）。只有当**配置的扩展阈值严格低于内置阈值**（或内置已禁用）时才接管，调用 `ctx.compact()` 触发压缩。
 - compact 进行中不会重复触发；compact 失败后的重试行为与 pi 原生一致（下个检查点照常重试，无冷却）。
 - 触发与完成/失败都会通过通知提示（无 UI 模式下静默）。
 

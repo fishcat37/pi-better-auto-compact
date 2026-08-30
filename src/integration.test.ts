@@ -149,6 +149,14 @@ describe("扩展入口", () => {
 		assert.equal(getCompactCalls(), 1);
 	});
 
+	it("before_agent_start 时检查，失败遗留的超限立即重试（对应原生发送前检查点）", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+		assert.equal(getCompactCalls(), 1);
+	});
+
 	it("compact-thresholds 命令输出阈值汇总", async () => {
 		const cwd = makeCwd({ percentThreshold: 80, usedTokensThreshold: 110_000 });
 		const { commands, ctx, notifications } = await setupExtension(cwd);
