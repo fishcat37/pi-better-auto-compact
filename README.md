@@ -1,32 +1,49 @@
 # pi-better-auto-compact
 
-pi coding agent 的扩展：在 pi 内置 auto-compact 的"剩余 token 阈值"之外，补充两种阈值方式，并让所有阈值**取最低者生效**（最先到达的触发 compact）。
+pi coding agent 的 auto-compact 扩展：在 pi 内置的"剩余 token 阈值"之外，补充按**上下文百分比**或**已用 token 数**触发自动压缩的阈值，所有阈值（含内置）取最低者生效。
 
-- pi 自身只支持"剩余多少 token 时 compact"（`compaction.reserveTokens`，默认 16384，即上下文窗口减去保留量）。
-- 本扩展补充：
-  - **百分比阈值** `percentThreshold`：已用上下文达到模型上下文窗口的百分之多少时 compact。
-  - **已用上下文阈值** `usedTokensThreshold`：已用上下文超过固定 token 数时 compact（如 `110000` 表示 110k）。
+- GitHub：https://github.com/fishcat37/pi-better-auto-compact
+- npm：https://www.npmjs.com/package/pi-better-auto-compact
 
-三种阈值统一换算为"已用 token"口径取最低值。例如 200k 窗口的模型，配置百分比 80%（160k）和已用 110k，加上内置剩余阈值（183.6k），则已用达到 **110k** 时最先触发 compact。若内置阈值最低，则仍由 pi 原生 auto-compact 触发，行为不变。
+## 这是什么
+
+pi 内置的 auto-compact 只支持一种口径：上下文剩余 token 不足时压缩（由 `settings.json` 的 `compaction.reserveTokens` 控制，默认 16384，即窗口减去保留量）。它无法表达"用到 80% 就压缩""用到 110k 就压缩"这类更直观的需求。
+
+本扩展补充两种阈值，并与内置阈值一起取**最低者**生效（最先到达的触发 compact）：
+
+| 阈值 | 含义 |
+|------|------|
+| pi 内置 `compaction.reserveTokens` | 剩余 token 不足（窗口 − 保留量）时 |
+| `percentThreshold` | 已用上下文达到模型上下文窗口的百分之多少时 |
+| `usedTokensThreshold` | 已用上下文超过固定 token 数时（如 `110000` 表示 110k） |
+
+例：200k 窗口的模型，配置 `percentThreshold: 80`（160k）和 `usedTokensThreshold: 110000`（110k），加上内置剩余阈值（183.6k），则已用达到 **110k** 时最先触发 compact。若内置阈值最低，则仍由 pi 原生 auto-compact 触发，行为不变。
+
+扩展不改变 pi 原生 auto-compact 的行为，只在扩展阈值更低时接管触发，详见[行为说明](#行为说明)。
 
 ## 安装
 
-任选其一：
+用 pi 自带的包管理命令安装：
 
 ```bash
-# 方式一：复制到全局扩展目录（对所选项目之外的所有会话生效）
-mkdir -p ~/.pi/agent/extensions && cp -r pi-better-auto-compact ~/.pi/agent/extensions/
+# 全局安装，所有项目的会话生效
+pi install npm:pi-better-auto-compact
 
-# 方式二：settings.json 的 extensions 数组指向本目录（全局 ~/.pi/agent/settings.json 或项目 .pi/settings.json）
-{ "extensions": ["/path/to/pi-better-auto-compact/src/index.ts"] }
-
-# 方式三：pi 包安装（git 仓库形式时）
-pi install git:github.com/<you>/pi-better-auto-compact
+# 仅当前项目生效
+pi install -l npm:pi-better-auto-compact
 ```
 
-仅对某个项目启用时，把路径写进该项目的 `.pi/settings.json` 即可。
+或从 GitHub 源码安装：
+
+```bash
+pi install git:github.com/fishcat37/pi-better-auto-compact
+```
+
+安装后重启 pi 生效；修改配置后在运行中的会话执行 `/reload` 重新加载。
 
 ## 配置
+
+扩展需要显式配置阈值，**两个字段都省略时扩展不动作**（pi 内置 auto-compact 不受影响）。
 
 配置文件为 JSON，项目配置浅合并覆盖全局：
 
@@ -45,24 +62,26 @@ pi install git:github.com/<you>/pi-better-auto-compact
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `enabled` | boolean（默认 `true`） | 总开关。`false` 时本扩展完全不动作，pi 内置 auto-compact 不受影响 |
+| `enabled` | boolean（默认 `true`） | 总开关。`false` 时扩展完全不动作，pi 内置 auto-compact 不受影响 |
 | `percentThreshold` | number，(0, 100] | 百分比阈值，可省略 |
 | `usedTokensThreshold` | 正整数 | 已用上下文阈值（token 数），可省略 |
 
-两个字段都省略时本扩展不生效。pi 内置的剩余阈值继续用 pi 自己的设置（`settings.json` 的 `compaction.reserveTokens`、`compaction.enabled`），本扩展会读取并与扩展阈值一起比较。
+另外：
 
-非法字段会被忽略并在 `/compact-thresholds` 中提示；修改配置后执行 `/reload` 生效。
+- 非法字段会被忽略，并在 `/compact-thresholds` 中提示。
+- pi 内置的剩余阈值继续由 pi 自己的设置控制（`settings.json` 的 `compaction.reserveTokens`、`compaction.enabled`），本扩展会读取并与扩展阈值一起比较。
 
 ## 命令
 
 - `/compact-thresholds`：查看当前模型的上下文窗口、各阈值换算后的取值、最低者与触发方（pi 内置 / 本扩展）、当前用量，以及配置问题提示。
 
-## 工作原理
+## 行为说明
 
-- 本扩展不改变 pi 内置 auto-compact，检查点与原生完全一致：每轮 turn 结束（`turn_end`）、发送新消息前（`before_agent_start`，compact 失败后用户重发消息即会立即重试）。扩展只在**配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值**的区间内接管并调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
-- `session_start` 仅加载配置，不触发压缩——与原生一致，resume 到已超限的会话时也等发送新消息前的检查点才处理。
-- 压缩执行与默认路径完全一致：`ctx.compact()` 与原生 threshold auto-compact 走同一个切点计算（`prepareCompaction`）和同一个默认摘要生成器（`_runDefaultCompaction`），不传任何自定义指令，会话中写入的 compaction 条目内容相同。唯一的差异来自 pi 的 API：`ctx.compact()` 一律标记为手动触发（`reason: "manual"`），因此压缩进行中状态条显示 "Compacting context..."（原生的自动压缩显示 "Auto-compacting..."），事件流中的 reason 字段同理；压缩结果不受影响，pi 未在 API 中暴露该标记。
-- 压缩过程与结果由 pi 原生呈现；扩展只在触发时提示一条"哪个阈值生效"（这是取最低值语义下原生没有的信息），无 UI 模式下静默。
+- **检查时机与 pi 原生完全一致**：每轮 turn 结束、发送新消息前各检查一次；compact 失败后重发消息会立即重试。
+- **只在需要时接管**：仅当配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值时，扩展才调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
+- **压缩本身走 pi 原生路径**：与原生 auto-compact 使用同一个切点计算和默认摘要生成器，不注入自定义指令，会话中的 compaction 记录内容相同。唯一差异：pi 的 API 会把 `ctx.compact()` 标记为手动触发，因此压缩进行中状态条显示 "Compacting context..."（原生自动压缩显示 "Auto-compacting..."），压缩结果不受影响。
+- **resume 行为与原生一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
+- **触发提示**：触发时提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；无 UI 模式下静默。
 
 ## 开发
 
@@ -74,21 +93,8 @@ pnpm check        # tsc --noEmit 类型检查
 pnpm test         # node --test 运行单元与集成测试
 ```
 
-扩展无需编译：pi 通过内置的 jiti 加载器直接运行 TypeScript 源码，并把 `@earendil-works/pi-coding-agent` 导入解析到 pi 自身，因此运行时不需要 node_modules（依赖仅用于本地类型检查与测试）。
+扩展无需编译：pi 通过内置的 jiti 加载器直接运行 TypeScript 源码，并把 `@earendil-works/pi-coding-agent` 导入解析到 pi 自身，因此运行时不需要 node_modules（依赖仅用于本地类型检查与测试）。测试通过临时 `$HOME` 隔离真实用户配置，不依赖网络与 API key。
 
-测试通过临时 `$HOME` 隔离真实用户配置，不依赖网络与 API key。
+## License
 
-## 目录结构
-
-```
-pi-better-auto-compact/
-├── package.json            # "pi": { "extensions": ["./src/index.ts"] } 声明扩展入口
-├── pnpm-workspace.yaml     # pnpm 配置（声明忽略 pi 传递依赖的无害构建脚本）
-├── tsconfig.json
-└── src/
-    ├── index.ts            # 扩展入口：事件监听、compact 触发、/compact-thresholds 命令
-    ├── config.ts           # 配置文件读取、合并与校验（全局 + 项目）
-    ├── thresholds.ts       # 阈值换算与取最低值（纯函数）
-    ├── thresholds.test.ts  # 阈值与配置单元测试
-    └── integration.test.ts # 扩展入口集成冒烟测试（mock pi API）
-```
+MIT
