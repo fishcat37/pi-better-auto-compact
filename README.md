@@ -1,4 +1,4 @@
-# better-auto-compact
+# pi-better-auto-compact
 
 pi coding agent 的扩展：在 pi 内置 auto-compact 的"剩余 token 阈值"之外，补充两种阈值方式，并让所有阈值**取最低者生效**（最先到达的触发 compact）。
 
@@ -15,13 +15,13 @@ pi coding agent 的扩展：在 pi 内置 auto-compact 的"剩余 token 阈值"�
 
 ```bash
 # 方式一：复制到全局扩展目录（对所选项目之外的所有会话生效）
-mkdir -p ~/.pi/agent/extensions && cp -r better-auto-compact ~/.pi/agent/extensions/
+mkdir -p ~/.pi/agent/extensions && cp -r pi-better-auto-compact ~/.pi/agent/extensions/
 
 # 方式二：settings.json 的 extensions 数组指向本目录（全局 ~/.pi/agent/settings.json 或项目 .pi/settings.json）
-{ "extensions": ["/path/to/better-auto-compact/src/index.ts"] }
+{ "extensions": ["/path/to/pi-better-auto-compact/src/index.ts"] }
 
 # 方式三：pi 包安装（git 仓库形式时）
-pi install git:github.com/<you>/better-auto-compact
+pi install git:github.com/<you>/pi-better-auto-compact
 ```
 
 仅对某个项目启用时，把路径写进该项目的 `.pi/settings.json` 即可。
@@ -81,7 +81,7 @@ pnpm test         # node --test 运行单元与集成测试
 ## 目录结构
 
 ```
-better-auto-compact/
+pi-better-auto-compact/
 ├── package.json            # "pi": { "extensions": ["./src/index.ts"] } 声明扩展入口
 ├── pnpm-workspace.yaml     # pnpm 配置（声明忽略 pi 传递依赖的无害构建脚本）
 ├── tsconfig.json
