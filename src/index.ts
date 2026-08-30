@@ -8,8 +8,8 @@
  * - usedTokensThreshold：已用上下文超过固定值（如 110000）
  *
  * 内置阈值由 pi 自身处理；本扩展只在存在严格更低的阈值时接管，
- * 在与原生相同的两处检查点（每轮 turn 结束后、发送新消息前）检查用量
- * 并调用 ctx.compact()。
+ * 在与原生相同的两处检查点（agent run 完整结束后、发送新消息前）检查用量
+ * 并调用 ctx.compact()，循环中途（工具调用轮次之间）不检查、不打断。
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -121,12 +121,19 @@ export default function (pi: ExtensionAPI) {
 		// 而是等发送新消息前的检查点触发，行为保持一致。
 	});
 
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("agent_end", (event, ctx) => {
+		// 与 pi 原生一致：压缩检查在 agent run 完整结束后进行，循环中途不打断。
+		// 用户主动中断的 run（stopReason aborted）跳过，对齐原生 post-run 检查的
+		// skipAbortedCheck 行为，由发送新消息前的检查点兜底。
+		const lastAssistant = [...event.messages].reverse().find((m) => m.role === "assistant");
+		if (lastAssistant?.stopReason === "aborted") {
+			return;
+		}
 		checkAndTrigger(ctx);
 	});
 
-	// 对应 pi 原生"发送新消息前"的检查点：compact 失败遗留的超限状态在用户
-	// 下一次发送消息时立即重试，而不是等这轮 turn 结束。
+	// 对应 pi 原生"发送新消息前"的检查点：resume 到超限会话、agent_end 检查
+	// 被跳过（用户中断）或压缩失败遗留的超限状态，在下一次发送消息前兜底处理。
 	pi.on("before_agent_start", (_event, ctx) => {
 		checkAndTrigger(ctx);
 	});

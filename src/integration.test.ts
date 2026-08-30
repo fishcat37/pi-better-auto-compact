@@ -64,6 +64,12 @@ function makeCtx(cwd: string, options: MockContextOptions) {
 	return { ctx, notifications, getCompactCalls: () => compactCalls };
 }
 
+/** agent_end 事件载荷：messages 只需覆盖"最后一条 assistant 消息"的判断。 */
+const agentEndEvent = (stopReason = "toolUse") => ({
+	type: "agent_end",
+	messages: [{ role: "assistant", stopReason }],
+});
+
 async function setupExtension(cwd: string) {
 	const { default: factory } = await import("./index.ts");
 	const handlers = new Map<string, Handler>();
@@ -79,10 +85,10 @@ async function setupExtension(cwd: string) {
 	factory(pi);
 
 	const sessionStart = handlers.get("session_start")!;
-	const turnEnd = handlers.get("turn_end")!;
+	const agentEnd = handlers.get("agent_end")!;
 	const { ctx, notifications, getCompactCalls } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
 	await sessionStart({ type: "session_start", reason: "resume" }, ctx);
-	return { handlers, commands, ctx, notifications, getCompactCalls, sessionStart, turnEnd };
+	return { handlers, commands, ctx, notifications, getCompactCalls, sessionStart, agentEnd };
 }
 
 describe("扩展入口", () => {
@@ -90,7 +96,8 @@ describe("扩展入口", () => {
 		const cwd = makeCwd(null);
 		const { handlers, commands } = await setupExtension(cwd);
 		assert.ok(handlers.has("session_start"));
-		assert.ok(handlers.has("turn_end"));
+		assert.ok(handlers.has("agent_end"));
+		assert.ok(handlers.has("before_agent_start"));
 		assert.ok(handlers.has("session_compact_failed"));
 		assert.ok(commands.has("compact-thresholds"));
 		assert.ok(commands.has("compact-toggle"));
@@ -98,48 +105,59 @@ describe("扩展入口", () => {
 
 	it("未配置扩展阈值时不接管（pi 内置阈值最低的场景）", async () => {
 		const cwd = makeCwd(null);
-		const { turnEnd, getCompactCalls } = await setupExtension(cwd);
+		const { agentEnd, getCompactCalls } = await setupExtension(cwd);
 		// 150k < 内置阈值 183616 且未配置扩展阈值 → 无扩展阈值可触发
 		const { ctx } = makeCtx(cwd, { tokens: 150_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 0);
 	});
 
 	it("已越过 pi 内置阈值时交给原生处理，扩展不触发", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { turnEnd, getCompactCalls } = await setupExtension(cwd);
+		const { agentEnd, getCompactCalls } = await setupExtension(cwd);
 		// 190k > 内置阈值 183616 → 原生 threshold/overflow 机制的全责，扩展不动作
 		const { ctx } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 0);
 	});
 
 	it("配置 usedTokensThreshold 后超过阈值触发 compact", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { turnEnd } = await setupExtension(cwd);
+		const { agentEnd } = await setupExtension(cwd);
 		const { ctx, getCompactCalls, notifications } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 1);
 		assert.ok(notifications.some((n) => n.includes("115,000") && n.includes("compact")));
 	});
 
 	it("compact 进行中不重复触发", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { turnEnd } = await setupExtension(cwd);
+		const { agentEnd } = await setupExtension(cwd);
 		const { ctx: ctx1, getCompactCalls: calls1 } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		const { ctx: ctx2, getCompactCalls: calls2 } = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx1);
-		await turnEnd({ type: "turn_end", turnIndex: 1 }, ctx2);
+		await agentEnd(agentEndEvent(), ctx1);
+		await agentEnd(agentEndEvent(), ctx2);
 		assert.equal(calls1(), 1);
 		assert.equal(calls2(), 0);
 	});
 
 	it("用量未知时不触发", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { turnEnd, getCompactCalls } = await setupExtension(cwd);
+		const { agentEnd, getCompactCalls } = await setupExtension(cwd);
 		const { ctx } = makeCtx(cwd, { tokens: null });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 0);
+	});
+
+	it("用户中断的 run（aborted）跳过压缩，由发送前检查点兜底", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await handlers.get("agent_end")!(agentEndEvent("aborted"), ctx);
+		assert.equal(getCompactCalls(), 0);
+		// 用户重发消息时兜底压缩
+		await handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+		assert.equal(getCompactCalls(), 1);
 	});
 
 	it("session_start 不主动触发，与原生一致（resume 后等发送前检查点）", async () => {
@@ -183,16 +201,16 @@ describe("扩展入口", () => {
 
 	it("enabled: false 时完全不动作", async () => {
 		const cwd = makeCwd({ enabled: false, usedTokensThreshold: 110_000 });
-		const { turnEnd, getCompactCalls, notifications } = await setupExtension(cwd);
+		const { agentEnd, getCompactCalls, notifications } = await setupExtension(cwd);
 		const { ctx } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 0);
 		assert.ok(!notifications.some((n) => n.includes("compact")));
 	});
 
 	it("compact-toggle args 关闭再开启：写入配置文件并本次会话立即生效", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { commands, turnEnd } = await setupExtension(cwd);
+		const { commands, agentEnd } = await setupExtension(cwd);
 		const toggle = commands.get("compact-toggle")!;
 		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
 
@@ -202,7 +220,7 @@ describe("扩展入口", () => {
 		assert.deepEqual(JSON.parse(rawOff), { usedTokensThreshold: 110_000, usedTokensEnabled: false });
 		// 关闭立即生效：超过阈值也不触发
 		const offRun = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, offRun.ctx);
+		await agentEnd(agentEndEvent(), offRun.ctx);
 		assert.equal(offRun.getCompactCalls(), 0);
 
 		await toggle.handler("used on", ctx);
@@ -211,7 +229,7 @@ describe("扩展入口", () => {
 		assert.deepEqual(JSON.parse(rawOn), { usedTokensThreshold: 110_000 });
 		// 开启立即生效：超过阈值恢复触发
 		const onRun = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, onRun.ctx);
+		await agentEnd(agentEndEvent(), onRun.ctx);
 		assert.equal(onRun.getCompactCalls(), 1);
 	});
 
