@@ -58,21 +58,17 @@ export default function (pi: ExtensionAPI) {
 
 	const triggerCompaction = (ctx: ExtensionContext, reason: string): void => {
 		inFlight = true;
+		// 压缩过程与结果由 pi 原生呈现（compaction 事件）；这里只提示触发原因
+		// （哪个阈值生效），这是原生没有的信息。
 		if (ctx.hasUI) {
 			ctx.ui.notify(`${EXTENSION_NAME}：${reason}，开始 compact`, "info");
 		}
 		ctx.compact({
 			onComplete: () => {
 				inFlight = false;
-				if (ctx.hasUI) {
-					ctx.ui.notify(`${EXTENSION_NAME}：compact 完成`, "info");
-				}
 			},
-			onError: (error) => {
+			onError: () => {
 				inFlight = false;
-				if (ctx.hasUI) {
-					ctx.ui.notify(`${EXTENSION_NAME}：compact 失败：${error.message}`, "error");
-				}
 			},
 		});
 	};
@@ -89,6 +85,11 @@ export default function (pi: ExtensionAPI) {
 		if (!effective.handleByExtension || effective.value === null) {
 			return;
 		}
+		// 已越过 pi 内置阈值时交给原生处理（threshold/overflow 全套机制），
+		// 避免与原生的检查点同时触发两条并行的压缩。
+		if (effective.builtInValue !== null && tokens > effective.builtInValue) {
+			return;
+		}
 		if (!isOverThreshold(tokens, effective.value)) {
 			return;
 		}
@@ -103,8 +104,8 @@ export default function (pi: ExtensionAPI) {
 		configPaths = loaded.paths;
 		loadBuiltInSettings(ctx.cwd);
 		inFlight = false;
-		// resume/fork 到一个已超限的会话时，首次测量即应触发
-		checkAndTrigger(ctx);
+		// 不在此处检查阈值：pi 原生 resume 已超限会话也不会主动压缩，
+		// 而是等发送新消息前的检查点触发，行为保持一致。
 	});
 
 	pi.on("turn_end", (_event, ctx) => {

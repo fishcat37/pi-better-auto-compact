@@ -97,11 +97,19 @@ describe("扩展入口", () => {
 
 	it("未配置扩展阈值时不接管（pi 内置阈值最低的场景）", async () => {
 		const cwd = makeCwd(null);
-		const { turnEnd, getCompactCalls, ctx } = await setupExtension(cwd);
-		// 190k > 内置阈值 183616，但应由 pi 内置触发，扩展不动作
-		const { ctx: turnCtx } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
-		await turnEnd({ type: "turn_end", turnIndex: 0 }, turnCtx);
-		await turnEnd({ type: "turn_end", turnIndex: 1 }, ctx);
+		const { turnEnd, getCompactCalls } = await setupExtension(cwd);
+		// 150k < 内置阈值 183616 且未配置扩展阈值 → 无扩展阈值可触发
+		const { ctx } = makeCtx(cwd, { tokens: 150_000, contextWindow: 200_000 });
+		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
+		assert.equal(getCompactCalls(), 0);
+	});
+
+	it("已越过 pi 内置阈值时交给原生处理，扩展不触发", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { turnEnd, getCompactCalls } = await setupExtension(cwd);
+		// 190k > 内置阈值 183616 → 原生 threshold/overflow 机制的全责，扩展不动作
+		const { ctx } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
+		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
 		assert.equal(getCompactCalls(), 0);
 	});
 
@@ -133,9 +141,8 @@ describe("扩展入口", () => {
 		assert.equal(getCompactCalls(), 0);
 	});
 
-	it("session_start 时会话已超限也触发（resume 场景）", async () => {
+	it("session_start 不主动触发，与原生一致（resume 后等发送前检查点）", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		// 直接调用 session_start，初始 usage 就是 150k
 		const { default: factory } = await import("./index.ts");
 		const handlers = new Map<string, Handler>();
 		factory({
@@ -144,8 +151,11 @@ describe("扩展入口", () => {
 			},
 			registerCommand: () => {},
 		} as unknown as ExtensionAPI);
+		// resume 到已超限会话（150k）：session_start 不压缩，发消息时才检查
 		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 150_000, contextWindow: 200_000 });
 		await handlers.get("session_start")!({ type: "session_start", reason: "resume" }, ctx);
+		assert.equal(getCompactCalls(), 0);
+		await handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
 		assert.equal(getCompactCalls(), 1);
 	});
 
@@ -173,7 +183,7 @@ describe("扩展入口", () => {
 	it("enabled: false 时完全不动作", async () => {
 		const cwd = makeCwd({ enabled: false, usedTokensThreshold: 110_000 });
 		const { turnEnd, getCompactCalls, notifications } = await setupExtension(cwd);
-		const { ctx } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
+		const { ctx } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
 		assert.equal(getCompactCalls(), 0);
 		assert.ok(!notifications.some((n) => n.includes("compact")));
