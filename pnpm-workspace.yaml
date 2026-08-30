@@ -1,0 +1,5 @@
+# 非工作区项目：此文件仅存放 pnpm 配置（pnpm 10+ 的配置位置）。
+# 这两个包是 pi 类型的传递依赖，其构建脚本（no-op / 预生成）对本项目无用。
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false

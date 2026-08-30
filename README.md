@@ -65,10 +65,12 @@ pi install git:github.com/<you>/better-auto-compact
 
 ## 开发
 
+依赖用 pnpm 管理：
+
 ```bash
-npm install        # 安装 devDependencies（typescript、@types/node、pi 类型）
-npm run check      # tsc --noEmit 类型检查
-npm test           # node --test 运行单元与集成测试
+pnpm install      # 安装 devDependencies（typescript、@types/node、pi 类型）
+pnpm check        # tsc --noEmit 类型检查
+pnpm test         # node --test 运行单元与集成测试
 ```
 
 扩展无需编译：pi 通过内置的 jiti 加载器直接运行 TypeScript 源码，并把 `@earendil-works/pi-coding-agent` 导入解析到 pi 自身，因此运行时不需要 node_modules（依赖仅用于本地类型检查与测试）。
@@ -80,6 +82,7 @@ npm test           # node --test 运行单元与集成测试
 ```
 better-auto-compact/
 ├── package.json            # "pi": { "extensions": ["./src/index.ts"] } 声明扩展入口
+├── pnpm-workspace.yaml     # pnpm 配置（声明忽略 pi 传递依赖的无害构建脚本）
 ├── tsconfig.json
 └── src/
     ├── index.ts            # 扩展入口：事件监听、compact 触发、/compact-thresholds 命令
