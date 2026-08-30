@@ -4,6 +4,9 @@
   "description": "pi coding agent extension: additional auto-compact thresholds (percent of context window / used tokens), taking the lowest of all thresholds including pi's built-in remaining-tokens threshold",
   "type": "module",
   "main": "src/index.ts",
+  "files": [
+    "src"
+  ],
   "pi": {
     "extensions": [
       "./src/index.ts"
