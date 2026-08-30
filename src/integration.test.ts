@@ -3,7 +3,7 @@
  * 验证事件注册、阈值触发与命令输出。通过临时 HOME 隔离用户真实配置。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -93,6 +93,7 @@ describe("扩展入口", () => {
 		assert.ok(handlers.has("turn_end"));
 		assert.ok(handlers.has("session_compact_failed"));
 		assert.ok(commands.has("compact-thresholds"));
+		assert.ok(commands.has("compact-toggle"));
 	});
 
 	it("未配置扩展阈值时不接管（pi 内置阈值最低的场景）", async () => {
@@ -187,5 +188,61 @@ describe("扩展入口", () => {
 		await turnEnd({ type: "turn_end", turnIndex: 0 }, ctx);
 		assert.equal(getCompactCalls(), 0);
 		assert.ok(!notifications.some((n) => n.includes("compact")));
+	});
+
+	it("compact-toggle args 关闭再开启：写入配置文件并本次会话立即生效", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { commands, turnEnd } = await setupExtension(cwd);
+		const toggle = commands.get("compact-toggle")!;
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+
+		await toggle.handler("used off", ctx);
+		assert.ok(notifications.some((n) => n.includes("已关闭") && n.includes("立即生效")));
+		const rawOff = readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8");
+		assert.deepEqual(JSON.parse(rawOff), { usedTokensThreshold: 110_000, usedTokensEnabled: false });
+		// 关闭立即生效：超过阈值也不触发
+		const offRun = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await turnEnd({ type: "turn_end", turnIndex: 0 }, offRun.ctx);
+		assert.equal(offRun.getCompactCalls(), 0);
+
+		await toggle.handler("used on", ctx);
+		assert.ok(notifications.some((n) => n.includes("已开启")));
+		const rawOn = readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8");
+		assert.deepEqual(JSON.parse(rawOn), { usedTokensThreshold: 110_000 });
+		// 开启立即生效：超过阈值恢复触发
+		const onRun = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await turnEnd({ type: "turn_end", turnIndex: 0 }, onRun.ctx);
+		assert.equal(onRun.getCompactCalls(), 1);
+	});
+
+	it("compact-toggle 非法参数提示用法，不改动配置", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { commands } = await setupExtension(cwd);
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+		await commands.get("compact-toggle")!.handler("what off", ctx);
+		assert.ok(notifications.some((n) => n.includes("无法识别")));
+		assert.deepEqual(
+			JSON.parse(readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8")),
+			{ usedTokensThreshold: 110_000 },
+		);
+	});
+
+	it("无 UI 且无参数时提示参数形式", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { commands } = await setupExtension(cwd);
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000, uiAvailable: false });
+		await commands.get("compact-toggle")!.handler("", ctx);
+		assert.ok(notifications.some((n) => n.includes("无交互界面")));
+	});
+
+	it("compact-thresholds 显示被开关禁用的阈值", async () => {
+		const cwd = makeCwd({ percentThreshold: 80, percentEnabled: false, usedTokensThreshold: 110_000 });
+		const { commands, ctx, notifications } = await setupExtension(cwd);
+		await commands.get("compact-thresholds")!.handler("", ctx);
+		const output = notifications.join("\n");
+		assert.ok(output.includes("已禁用"));
+		assert.ok(output.includes("percentEnabled: false"));
+		assert.ok(output.includes("已用 110,000 tokens"));
+		assert.ok(!output.includes("80% 上下文窗口"));
 	});
 });

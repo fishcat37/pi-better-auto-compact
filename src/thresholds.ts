@@ -65,7 +65,8 @@ export function computeThresholds(
 
 	let hasExtensionThreshold = false;
 	if (config.enabled) {
-		if (config.percentThreshold !== undefined) {
+		// 开关字段缺省视为 true（!== false），数值仍在配置中但开关关闭时不参与比较。
+		if (config.percentThreshold !== undefined && config.percentEnabled !== false) {
 			hasExtensionThreshold = true;
 			candidates.push({
 				source: "percent",
@@ -73,7 +74,7 @@ export function computeThresholds(
 				describe: `${config.percentThreshold}% 上下文窗口`,
 			});
 		}
-		if (config.usedTokensThreshold !== undefined) {
+		if (config.usedTokensThreshold !== undefined && config.usedTokensEnabled !== false) {
 			hasExtensionThreshold = true;
 			candidates.push({
 				source: "used",

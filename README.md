@@ -64,7 +64,9 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 |------|------|------|
 | `enabled` | boolean（默认 `true`） | 总开关。`false` 时扩展完全不动作，pi 内置 auto-compact 不受影响 |
 | `percentThreshold` | number，(0, 100] | 百分比阈值，可省略 |
+| `percentEnabled` | boolean（默认 `true`） | 百分比阈值开关。`false` 时该阈值不参与比较，数值保留在配置中 |
 | `usedTokensThreshold` | 正整数 | 已用上下文阈值（token 数），可省略 |
+| `usedTokensEnabled` | boolean（默认 `true`） | 已用阈值开关。`false` 时该阈值不参与比较，数值保留在配置中 |
 
 另外：
 
@@ -73,7 +75,10 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 
 ## 命令
 
-- `/compact-thresholds`：查看当前模型的上下文窗口、各阈值换算后的取值、最低者与触发方（pi 内置 / 本扩展）、当前用量，以及配置问题提示。
+- `/compact-thresholds`：查看当前模型的上下文窗口、各阈值换算后的取值、最低者与触发方（pi 内置 / 本扩展）、当前用量，以及被开关禁用的阈值和配置问题提示。
+- `/compact-toggle`：开关两种补充阈值。无参数时打开交互菜单，逐项切换并立即生效，可连续切换（Esc 退出）；也支持参数形式 `/compact-toggle percent|used on|off`。
+  - 写入配置文件并重载内存配置，**本次会话立即生效**，无需 `/reload`，重启后仍保持。
+  - 开关字段（`percentEnabled` / `usedTokensEnabled`）写在提供该阈值数值的配置文件里（项目配置优先）；非法参数、JSON 损坏或阈值未配置数值时会提示且不改动文件。
 
 ## 行为说明
 
