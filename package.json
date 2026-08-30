@@ -1,9 +1,13 @@
 {
   "name": "pi-better-auto-compact",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "pi coding agent extension: additional auto-compact thresholds (percent of context window / used tokens), taking the lowest of all thresholds including pi's built-in remaining-tokens threshold",
   "type": "module",
   "main": "src/index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishcat37/pi-better-auto-compact.git"
+  },
   "files": [
     "src"
   ],
@@ -17,12 +21,15 @@
     "test": "node --test src/*.test.ts"
   },
   "keywords": [
+    "pi-package",
     "pi",
-    "pi-extension",
     "auto-compact",
     "compaction"
   ],
   "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.4",
     "@types/node": "^24.13.3",
