@@ -24,8 +24,6 @@ export default function (pi: ExtensionAPI) {
 	let builtInSettings: BuiltInCompactionSettings = { enabled: true, reserveTokens: 16384 };
 	/** compact 进行中标志，防止在回调到来前重复触发。 */
 	let inFlight = false;
-	/** 上次 compact 失败时的已用 token 数，用于失败后的重试缓冲。 */
-	let lastFailureTokens: number | null = null;
 
 	const formatTokens = (n: number): string => n.toLocaleString("en-US");
 
@@ -59,22 +57,18 @@ export default function (pi: ExtensionAPI) {
 
 	const triggerCompaction = (ctx: ExtensionContext, reason: string): void => {
 		inFlight = true;
-		const tokensAtTrigger = ctx.getContextUsage()?.tokens ?? null;
 		if (ctx.hasUI) {
 			ctx.ui.notify(`${EXTENSION_NAME}：${reason}，开始 compact`, "info");
 		}
 		ctx.compact({
 			onComplete: () => {
 				inFlight = false;
-				lastFailureTokens = null;
 				if (ctx.hasUI) {
 					ctx.ui.notify(`${EXTENSION_NAME}：compact 完成`, "info");
 				}
 			},
 			onError: (error) => {
 				inFlight = false;
-				// 记录失败点，用量再增长 RETRY_BUFFER_TOKENS 后才会重试
-				lastFailureTokens = tokensAtTrigger;
 				if (ctx.hasUI) {
 					ctx.ui.notify(`${EXTENSION_NAME}：compact 失败：${error.message}`, "error");
 				}
@@ -94,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 		if (!effective.handleByExtension || effective.value === null) {
 			return;
 		}
-		if (!isOverThreshold(tokens, effective.value, lastFailureTokens)) {
+		if (!isOverThreshold(tokens, effective.value)) {
 			return;
 		}
 		const lowest = effective.candidates[0];
@@ -108,7 +102,6 @@ export default function (pi: ExtensionAPI) {
 		configPaths = loaded.paths;
 		loadBuiltInSettings(ctx.cwd);
 		inFlight = false;
-		lastFailureTokens = null;
 		// resume/fork 到一个已超限的会话时，首次测量即应触发
 		checkAndTrigger(ctx);
 	});

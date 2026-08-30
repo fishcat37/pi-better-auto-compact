@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mergeConfigs, type ConfigIssue } from "./config.ts";
-import { computeThresholds, isOverThreshold, RETRY_BUFFER_TOKENS } from "./thresholds.ts";
+import { computeThresholds, isOverThreshold } from "./thresholds.ts";
 
 const WINDOW = 200_000;
 const BUILT_IN = { enabled: true, reserveTokens: 16_384 };
@@ -90,19 +90,8 @@ describe("computeThresholds", () => {
 
 describe("isOverThreshold", () => {
 	it("未达到阈值为 false，达到为 true（严格大于）", () => {
-		assert.equal(isOverThreshold(110_000, 110_000, null), false);
-		assert.equal(isOverThreshold(110_001, 110_000, null), true);
-	});
-
-	it("失败后需在失败点之上再增长一个重试缓冲才重试", () => {
-		const fail = 110_000;
-		assert.equal(isOverThreshold(110_000 + 100, 110_000, fail), false);
-		assert.equal(isOverThreshold(110_000 + RETRY_BUFFER_TOKENS, 110_000, fail), false);
-		assert.equal(isOverThreshold(110_000 + RETRY_BUFFER_TOKENS + 1, 110_000, fail), true);
-	});
-
-	it("成功后清除失败点，达到阈值即触发", () => {
-		assert.equal(isOverThreshold(111_000, 110_000, null), true);
+		assert.equal(isOverThreshold(110_000, 110_000), false);
+		assert.equal(isOverThreshold(110_001, 110_000), true);
 	});
 });
 

@@ -100,24 +100,10 @@ export function computeThresholds(
 	};
 }
 
-/** compact 失败后的重试缓冲：失败点之后需再增长这么多 token 才重试，避免每轮重复失败。 */
-export const RETRY_BUFFER_TOKENS = 4096;
-
 /**
  * 当前 token 数是否达到阈值需要触发 compact。
- * 上次触发失败时，需在失败点之上再增长 RETRY_BUFFER_TOKENS 才重试。
+ * 与 pi 原生 auto-compact 一致：失败后不设冷却，下一个检查点照常重试。
  */
-export function isOverThreshold(
-	currentTokens: number,
-	threshold: number,
-	lastFailureTokens: number | null,
-	retryBufferTokens: number = RETRY_BUFFER_TOKENS,
-): boolean {
-	if (currentTokens <= threshold) {
-		return false;
-	}
-	if (lastFailureTokens !== null && currentTokens <= lastFailureTokens + retryBufferTokens) {
-		return false;
-	}
-	return true;
+export function isOverThreshold(currentTokens: number, threshold: number): boolean {
+	return currentTokens > threshold;
 }
