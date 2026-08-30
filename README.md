@@ -61,6 +61,7 @@ pi install git:github.com/<you>/better-auto-compact
 
 - 本扩展不改变 pi 内置 auto-compact，检查点与原生完全一致：每轮 turn 结束（`turn_end`）、发送新消息前（`before_agent_start`，compact 失败后用户重发消息即会立即重试）。扩展只在**配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值**的区间内接管并调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
 - `session_start` 仅加载配置，不触发压缩——与原生一致，resume 到已超限的会话时也等发送新消息前的检查点才处理。
+- 压缩执行与默认路径完全一致：`ctx.compact()` 与原生 threshold auto-compact 走同一个切点计算（`prepareCompaction`）和同一个默认摘要生成器（`_runDefaultCompaction`），不传任何自定义指令，会话中写入的 compaction 条目内容相同。唯一的差异来自 pi 的 API：`ctx.compact()` 一律标记为手动触发（`reason: "manual"`），因此压缩进行中状态条显示 "Compacting context..."（原生的自动压缩显示 "Auto-compacting..."），事件流中的 reason 字段同理；压缩结果不受影响，pi 未在 API 中暴露该标记。
 - 压缩过程与结果由 pi 原生呈现；扩展只在触发时提示一条"哪个阈值生效"（这是取最低值语义下原生没有的信息），无 UI 模式下静默。
 
 ## 开发
