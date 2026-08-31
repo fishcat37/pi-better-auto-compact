@@ -1,5 +1,12 @@
 # pi-better-auto-compact
 
+[![pi extension](https://img.shields.io/badge/pi-extension-9333EA)](https://www.npmjs.com/package/pi-better-auto-compact)
+[![npm](https://img.shields.io/npm/v/pi-better-auto-compact?logo=npm)](https://www.npmjs.com/package/pi-better-auto-compact)
+[![tests](https://img.shields.io/github/actions/workflow/status/fishcat37/pi-better-auto-compact/ci.yml?branch=main&label=tests)](https://github.com/fishcat37/pi-better-auto-compact/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/fishcat37/pi-better-auto-compact)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TS-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![tested with](https://img.shields.io/badge/tested_with-Node.js-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+
 pi coding agent 的 auto-compact 扩展：在 pi 内置的"剩余 token 阈值"之外，补充按**上下文百分比**或**已用 token 数**触发自动压缩的阈值，所有阈值（含内置）取最低者生效。
 
 - GitHub：https://github.com/fishcat37/pi-better-auto-compact
