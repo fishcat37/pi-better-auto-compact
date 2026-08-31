@@ -1,6 +1,6 @@
-# pi-better-auto-compact
-
 <div align="center">
+
+# pi-better-auto-compact
 
 [![pi extension](https://img.shields.io/badge/pi-extension-9333EA)](https://www.npmjs.com/package/pi-better-auto-compact)
 [![npm](https://img.shields.io/npm/v/pi-better-auto-compact?logo=npm)](https://www.npmjs.com/package/pi-better-auto-compact)
