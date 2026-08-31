@@ -7,7 +7,7 @@ pi coding agent 的 auto-compact 扩展：在 pi 内置的"剩余 token 阈值"�
 
 ## 这是什么
 
-pi 内置的 auto-compact 只支持一种口径：上下文剩余 token 不足时压缩（由 `settings.json` 的 `compaction.reserveTokens` 控制，默认 16384，即窗口减去保留量）。它无法表达"用到 80% 就压缩""用到 110k 就压缩"这类更直观的需求。
+pi 内置的 auto-compact 只支持一种口径：上下文剩余 token 不足时压缩（由 `settings.json` 的 `compaction.reserveTokens` 控制，默认 16384，即窗口减去保留量）。它无法表达"用到 90% 就压缩""用到 240k 就压缩"这类更直观的需求。
 
 本扩展补充两种阈值，并与内置阈值一起取**最低者**生效（最先到达的触发 compact）：
 
@@ -15,9 +15,9 @@ pi 内置的 auto-compact 只支持一种口径：上下文剩余 token 不足�
 |------|------|
 | pi 内置 `compaction.reserveTokens` | 剩余 token 不足（窗口 − 保留量）时 |
 | `percentThreshold` | 已用上下文达到模型上下文窗口的百分之多少时 |
-| `usedTokensThreshold` | 已用上下文超过固定 token 数时（如 `110000` 表示 110k） |
+| `usedTokensThreshold` | 已用上下文超过固定 token 数时（如 `240000` 表示 240k） |
 
-例：200k 窗口的模型，配置 `percentThreshold: 80`（160k）和 `usedTokensThreshold: 110000`（110k），加上内置剩余阈值（183.6k），则已用达到 **110k** 时最先触发 compact。若内置阈值最低，则仍由 pi 原生 auto-compact 触发，行为不变。
+例：1M 窗口的模型，配置 `percentThreshold: 90`（900k）和 `usedTokensThreshold: 240000`（240k），加上内置剩余阈值（983.6k），则已用达到 **240k** 时最先触发 compact。若内置阈值最低，则仍由 pi 原生 auto-compact 触发，行为不变。
 
 扩展不改变 pi 原生 auto-compact 的行为，只在扩展阈值更低时接管触发，详见[行为说明](#行为说明)。
 
@@ -55,8 +55,8 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 ```json
 {
   "enabled": true,
-  "percentThreshold": 80,
-  "usedTokensThreshold": 110000
+  "percentThreshold": 90,
+  "usedTokensThreshold": 240000
 }
 ```
 

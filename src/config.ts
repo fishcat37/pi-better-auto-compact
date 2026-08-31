@@ -20,7 +20,7 @@ export interface BetterAutoCompactConfig {
 	/** 百分比阈值开关，默认 true。false 时该阈值不参与比较（数值仍保留在配置中）。 */
 	percentEnabled?: boolean;
 	/**
-	 * 已用上下文阈值：已用 token 超过该值时 compact（如 110000 表示 110k）。
+	 * 已用上下文阈值：已用 token 超过该值时 compact（如 240000 表示 240k）。
 	 * 未配置表示不启用该阈值。
 	 */
 	usedTokensThreshold?: number;
