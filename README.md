@@ -1,5 +1,7 @@
 # pi-better-auto-compact
 
+<div align="center">
+
 [![pi extension](https://img.shields.io/badge/pi-extension-9333EA)](https://www.npmjs.com/package/pi-better-auto-compact)
 [![npm](https://img.shields.io/npm/v/pi-better-auto-compact?logo=npm)](https://www.npmjs.com/package/pi-better-auto-compact)
 [![tests](https://img.shields.io/github/actions/workflow/status/fishcat37/pi-better-auto-compact/ci.yml?branch=main&label=tests)](https://github.com/fishcat37/pi-better-auto-compact/actions/workflows/ci.yml)
@@ -7,57 +9,61 @@
 [![TypeScript](https://img.shields.io/badge/TS-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![tested with](https://img.shields.io/badge/tested_with-Node.js-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-pi coding agent 的 auto-compact 扩展：在 pi 内置的"剩余 token 阈值"之外，补充按**上下文百分比**或**已用 token 数**触发自动压缩的阈值，所有阈值（含内置）取最低者生效。
+**English** | [简体中文](./README.zh-CN.md)
 
-- GitHub：https://github.com/fishcat37/pi-better-auto-compact
-- npm：https://www.npmjs.com/package/pi-better-auto-compact
+</div>
 
-## 这是什么
+An auto-compact extension for the pi coding agent: on top of pi's built-in "remaining tokens" threshold, it adds compaction triggers based on the **context percentage** or the number of **used tokens**. The lowest of all thresholds (including the built-in one) wins.
 
-pi 内置的 auto-compact 只支持一种口径：上下文剩余 token 不足时压缩（由 `settings.json` 的 `compaction.reserveTokens` 控制，默认 16384，即窗口减去保留量）。它无法表达"用到 90% 就压缩""用到 240k 就压缩"这类更直观的需求。
+- GitHub: https://github.com/fishcat37/pi-better-auto-compact
+- npm: https://www.npmjs.com/package/pi-better-auto-compact
 
-本扩展补充两种阈值，并与内置阈值一起取**最低者**生效（最先到达的触发 compact）：
+## What is this
 
-| 阈值 | 含义 |
-|------|------|
-| pi 内置 `compaction.reserveTokens` | 剩余 token 不足（窗口 − 保留量）时 |
-| `percentThreshold` | 已用上下文达到模型上下文窗口的百分之多少时 |
-| `usedTokensThreshold` | 已用上下文超过固定 token 数时（如 `240000` 表示 240k） |
+pi's built-in auto-compact supports only one criterion: compact when the remaining context tokens run low (controlled by `compaction.reserveTokens` in `settings.json`, default 16384 — the window minus the reserve). It cannot express more intuitive needs like "compact at 90% usage" or "compact at 240k used tokens".
 
-例：1M 窗口的模型，配置 `percentThreshold: 90`（900k）和 `usedTokensThreshold: 240000`（240k），加上内置剩余阈值（983.6k），则已用达到 **240k** 时最先触发 compact。若内置阈值最低，则仍由 pi 原生 auto-compact 触发，行为不变。
+This extension adds two more thresholds that take effect together with the built-in one — the **lowest** fires first:
 
-扩展不改变 pi 原生 auto-compact 的行为，只在扩展阈值更低时接管触发，详见[行为说明](#行为说明)。
+| Threshold | Meaning |
+|-----------|---------|
+| pi built-in `compaction.reserveTokens` | when remaining tokens drop below (window − reserve) |
+| `percentThreshold` | when used context reaches a percentage of the model's context window |
+| `usedTokensThreshold` | when used context exceeds a fixed token count (e.g. `240000` = 240k) |
 
-## 安装
+Example: for a 1M-token model, configure `percentThreshold: 90` (900k) and `usedTokensThreshold: 240000` (240k); together with the built-in remaining threshold (983.6k), compaction first triggers at **240k** used. If the built-in threshold is the lowest, pi's native auto-compact fires as usual.
 
-用 pi 自带的包管理命令安装：
+The extension never changes pi's native auto-compact behavior; it only takes over when an extension threshold is lower. See [Behavior](#behavior).
+
+## Installation
+
+Install with pi's built-in package manager:
 
 ```bash
-# 全局安装，所有项目的会话生效
+# Global install, applies to sessions in all projects
 pi install npm:pi-better-auto-compact
 
-# 仅当前项目生效
+# Current project only
 pi install -l npm:pi-better-auto-compact
 ```
 
-或从 GitHub 源码安装：
+Or install from the GitHub source:
 
 ```bash
 pi install git:github.com/fishcat37/pi-better-auto-compact
 ```
 
-安装后重启 pi 生效；修改配置后在运行中的会话执行 `/reload` 重新加载。
+Restart pi after installing. After changing the config, run `/reload` in a live session.
 
-## 配置
+## Configuration
 
-扩展需要显式配置阈值，**两个字段都省略时扩展不动作**（pi 内置 auto-compact 不受影响）。
+Thresholds must be configured explicitly; **if both fields are omitted, the extension does nothing** (pi's built-in auto-compact is unaffected).
 
-配置文件为 JSON，项目配置浅合并覆盖全局：
+Config files are JSON; the project config shallow-merges over the global one:
 
-| 位置 | 路径 |
-|------|------|
-| 全局 | `~/.pi/agent/better-auto-compact.json` |
-| 项目 | `<项目>/.pi/better-auto-compact.json` |
+| Location | Path |
+|----------|------|
+| Global   | `~/.pi/agent/better-auto-compact.json` |
+| Project  | `<project>/.pi/better-auto-compact.json` |
 
 ```json
 {
@@ -67,47 +73,47 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `enabled` | boolean（默认 `true`） | 总开关。`false` 时扩展完全不动作，pi 内置 auto-compact 不受影响 |
-| `percentThreshold` | number，(0, 100] | 百分比阈值，可省略 |
-| `percentEnabled` | boolean（默认 `true`） | 百分比阈值开关。`false` 时该阈值不参与比较，数值保留在配置中 |
-| `usedTokensThreshold` | 正整数 | 已用上下文阈值（token 数），可省略 |
-| `usedTokensEnabled` | boolean（默认 `true`） | 已用阈值开关。`false` 时该阈值不参与比较，数值保留在配置中 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean (default `true`) | Master switch. When `false`, the extension does nothing and pi's built-in auto-compact is unaffected |
+| `percentThreshold` | number, (0, 100] | Percentage threshold; optional |
+| `percentEnabled` | boolean (default `true`) | Switch for the percentage threshold. When `false`, it does not participate in the comparison (the value stays in the config) |
+| `usedTokensThreshold` | positive integer | Used-tokens threshold (token count); optional |
+| `usedTokensEnabled` | boolean (default `true`) | Switch for the used-tokens threshold. When `false`, it does not participate in the comparison (the value stays in the config) |
 
-另外：
+Also:
 
-- 非法字段会被忽略，并在 `/compact-thresholds` 中提示。
-- pi 内置的剩余阈值继续由 pi 自己的设置控制（`settings.json` 的 `compaction.reserveTokens`、`compaction.enabled`），本扩展会读取并与扩展阈值一起比较。
+- Invalid fields are ignored and reported in `/compact-thresholds`.
+- pi's built-in remaining threshold stays under pi's own control (`settings.json`: `compaction.reserveTokens`, `compaction.enabled`); this extension reads it and compares it together with the extension thresholds.
 
-## 命令
+## Commands
 
-- `/compact-thresholds`：查看当前模型的上下文窗口、各阈值换算后的取值、最低者与触发方（pi 内置 / 本扩展）、当前用量，以及被开关禁用的阈值和配置问题提示。
-- `/compact-toggle`：开关或直接设置两种补充阈值。无参数时打开交互菜单，逐项切换并立即生效，可连续切换（Esc 退出）；也支持参数形式 `/compact-toggle percent|used on|off|<数值>`：
-  - `/compact-toggle percent 90` 设置百分比阈值为 90%；`/compact-toggle used 240000` 设置已用 token 阈值为 240000。
-  - 写入配置文件并重载内存配置，**本次会话立即生效**，无需 `/reload`，重启后仍保持。
-  - 数值与开关字段写在提供该阈值数值的配置文件里（项目配置优先）；两处都未配置数值时，设置数值会写入项目配置（目录不存在自动创建），并清除对应开关字段（恢复默认开启）。
-  - 非法参数（如 `percent 150`、`used 110.5`）、JSON 损坏，或开关时阈值尚未配置数值，会提示且不改动文件。
+- `/compact-thresholds`: show the current model's context window, each threshold's converted value, the lowest one and who fires it (pi built-in / this extension), current usage, thresholds disabled by their switches, and config issues.
+- `/compact-toggle`: toggle the two extension thresholds, or set their values directly. With no arguments it opens an interactive menu for toggling, effective immediately, with consecutive toggling supported (Esc to exit); it also accepts the argument form `/compact-toggle percent|used on|off|<value>`:
+  - `/compact-toggle percent 90` sets the percentage threshold to 90%; `/compact-toggle used 240000` sets the used-tokens threshold to 240000.
+  - Writes the config file and reloads the in-memory config — **effective immediately in the current session**, no `/reload` needed, and persists across restarts.
+  - Values and toggle flags are written to the config file that provides the threshold value (project config wins); when neither file has a value yet, setting a value writes the project config (creating the directory if missing) and clears the toggle flag (back to the default on).
+  - Invalid arguments (e.g. `percent 150`, `used 110.5`), broken JSON, or toggling a threshold that has no value yet is reported without changing any file.
 
-## 行为说明
+## Behavior
 
-- **检查时机与 pi 原生完全一致**：agent run 完整结束后、发送新消息前各检查一次，循环中途（工具调用轮次之间）不检查、不打断；用户主动中断的 run 跳过检查，由发送新消息前的检查点兜底；compact 失败后重发消息会立即重试。
-- **只在需要时接管**：仅当配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值时，扩展才调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
-- **压缩本身走 pi 原生路径**：与原生 auto-compact 使用同一个切点计算和默认摘要生成器，不注入自定义指令，会话中的 compaction 记录内容相同。唯一差异：pi 的 API 会把 `ctx.compact()` 标记为手动触发，因此压缩进行中状态条显示 "Compacting context..."（原生自动压缩显示 "Auto-compacting..."），压缩结果不受影响。
-- **resume 行为与原生一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
-- **触发提示**：触发时提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；无 UI 模式下静默。
+- **Check timing is identical to pi native**: checked once after an agent run fully ends and once before a new message is sent; never mid-loop (between tool turns). Runs aborted by the user skip the check, and the before-send checkpoint acts as a safety net; retrying after a failed compact triggers immediately.
+- **Takes over only when needed**: only when a configured extension threshold is strictly lower than the built-in threshold, and usage has not yet passed the built-in threshold, does the extension call `ctx.compact()`; once past the built-in threshold, pi native (the full threshold/overflow mechanics) takes over.
+- **Compaction itself uses pi's native path**: the same cut-point computation and default summarizer as native auto-compact, no custom instructions injected, and the compaction record in the session is identical. The only difference: pi's API marks `ctx.compact()` as manually triggered, so the in-progress status bar shows "Compacting context..." (native auto-compact shows "Auto-compacting..."); the result is unaffected.
+- **resume behaves like native**: on session load it only reads the config, no compaction; resuming into an over-limit session waits for the before-send checkpoint.
+- **Trigger notice**: on trigger it prints one line about which threshold fired (information native lacks under lowest-wins semantics); silent in headless mode.
 
-## 开发
+## Development
 
-依赖用 pnpm 管理：
+Dependencies are managed with pnpm:
 
 ```bash
-pnpm install      # 安装 devDependencies（typescript、@types/node、pi 类型）
-pnpm check        # tsc --noEmit 类型检查
-pnpm test         # node --test 运行单元与集成测试
+pnpm install      # install devDependencies (typescript, @types/node, pi types)
+pnpm check        # tsc --noEmit type check
+pnpm test         # node --test, unit + integration tests
 ```
 
-扩展无需编译：pi 通过内置的 jiti 加载器直接运行 TypeScript 源码，并把 `@earendil-works/pi-coding-agent` 导入解析到 pi 自身，因此运行时不需要 node_modules（依赖仅用于本地类型检查与测试）。测试通过临时 `$HOME` 隔离真实用户配置，不依赖网络与 API key。
+The extension needs no build step: pi loads the TypeScript source directly through its built-in jiti loader and resolves `@earendil-works/pi-coding-agent` imports to pi itself, so no node_modules is needed at runtime (dependencies are only for local type checking and tests). Tests isolate the real user config through a temporary `$HOME` and need no network or API key.
 
 ## License
 
