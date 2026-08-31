@@ -36,11 +36,17 @@ interface MockContextOptions {
 	contextWindow?: number;
 	percent?: number | null;
 	uiAvailable?: boolean;
+	/** 挂起 compact 完成，用 releaseCompact() 手控时机（测 inFlight 与阻塞语义）。 */
+	compactHoldOpen?: boolean;
+	/** compact 同步抛错（测扩展实例失效等异常路径不悬挂）。 */
+	compactThrows?: boolean;
 }
 
 function makeCtx(cwd: string, options: MockContextOptions) {
 	const notifications: string[] = [];
 	let compactCalls = 0;
+	let compactCompleted = false;
+	let releaseCompact: (() => void) | null = null;
 	const ctx = {
 		cwd,
 		hasUI: options.uiAvailable ?? true,
@@ -57,11 +63,31 @@ function makeCtx(cwd: string, options: MockContextOptions) {
 						contextWindow: options.contextWindow ?? 200_000,
 						percent: options.percent ?? null,
 					},
-		compact: () => {
+		compact: (compactOptions?: { onComplete?: () => void; onError?: (error: Error) => void }) => {
 			compactCalls += 1;
+			if (options.compactThrows) {
+				throw new Error("extension instance stale");
+			}
+			if (options.compactHoldOpen) {
+				releaseCompact = () => {
+					compactCompleted = true;
+					compactOptions?.onComplete?.();
+				};
+				return;
+			}
+			queueMicrotask(() => {
+				compactCompleted = true;
+				compactOptions?.onComplete?.();
+			});
 		},
 	} as unknown as ExtensionContext;
-	return { ctx, notifications, getCompactCalls: () => compactCalls };
+	return {
+		ctx,
+		notifications,
+		getCompactCalls: () => compactCalls,
+		isCompactCompleted: () => compactCompleted,
+		releaseCompact: () => releaseCompact?.(),
+	};
 }
 
 /** agent_end 事件载荷：messages 只需覆盖"最后一条 assistant 消息"的判断。 */
@@ -130,15 +156,47 @@ describe("扩展入口", () => {
 		assert.ok(notifications.some((n) => n.includes("115,000") && n.includes("compact")));
 	});
 
-	it("compact 进行中不重复触发", async () => {
+	it("压缩完成前不重复触发（inFlight 期间第二次检查跳过）", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
 		const { agentEnd } = await setupExtension(cwd);
-		const { ctx: ctx1, getCompactCalls: calls1 } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
-		const { ctx: ctx2, getCompactCalls: calls2 } = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
-		await agentEnd(agentEndEvent(), ctx1);
-		await agentEnd(agentEndEvent(), ctx2);
-		assert.equal(calls1(), 1);
-		assert.equal(calls2(), 0);
+		const first = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactHoldOpen: true });
+		const second = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
+		const pending = agentEnd(agentEndEvent(), first.ctx);
+		await agentEnd(agentEndEvent(), second.ctx);
+		assert.equal(first.getCompactCalls(), 1);
+		assert.equal(second.getCompactCalls(), 0);
+		first.releaseCompact();
+		await pending;
+		assert.ok(first.isCompactCompleted());
+	});
+
+	it("agent_end 等待压缩完成后才返回（对应原生 post-run 循环内同步压缩）", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { agentEnd } = await setupExtension(cwd);
+		const { ctx, getCompactCalls, isCompactCompleted } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await agentEnd(agentEndEvent(), ctx);
+		assert.equal(getCompactCalls(), 1);
+		assert.ok(isCompactCompleted(), "handler 返回时压缩应已完成");
+	});
+
+	it("before_agent_start 等待压缩完成后才返回（压缩完成后新消息才发出）", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const { ctx, getCompactCalls, isCompactCompleted } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await handlers.get("before_agent_start")!({ type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+		assert.equal(getCompactCalls(), 1);
+		assert.ok(isCompactCompleted(), "handler 返回时压缩应已完成");
+	});
+
+	it("ctx.compact 同步抛错时不悬挂，且压缩标志复位允许后续触发", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { agentEnd } = await setupExtension(cwd);
+		const first = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactThrows: true });
+		await agentEnd(agentEndEvent(), first.ctx);
+		const second = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
+		await agentEnd(agentEndEvent(), second.ctx);
+		assert.equal(first.getCompactCalls(), 1);
+		assert.equal(second.getCompactCalls(), 1);
 	});
 
 	it("用量未知时不触发", async () => {
