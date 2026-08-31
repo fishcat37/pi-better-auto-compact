@@ -135,8 +135,36 @@ export interface ThresholdToggleResult {
 	/** 要写入的新文本；null 表示该文件无需改动（含不存在且无需创建的情况）。 */
 	global: string | null;
 	project: string | null;
-	/** 非空表示无法完成切换（JSON 损坏或阈值未配置数值）。 */
+	/** 非空表示无法完成操作（JSON 损坏，或开关时阈值未配置数值）。 */
 	error?: string;
+}
+
+/** 解析配置文件文本为 JSON 对象；文本 null 表示文件不存在，根不是对象视同不存在。 */
+function parseConfigText(text: string | null, name: string): { value: Record<string, unknown> | null; error?: string } {
+	if (text === null) {
+		return { value: null };
+	}
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return { value: isPlainObject(parsed) ? parsed : null };
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { value: null, error: `${name}配置 JSON 解析失败（${reason}），请先手动修复后再用命令操作。` };
+	}
+}
+
+/** 序列化为配置文件文本；与原文相同时返回 null，由调用方跳过写入。 */
+function serializeConfigText(obj: Record<string, unknown>, original: string | null): string | null {
+	const newText = `${JSON.stringify(obj, null, 2)}\n`;
+	return newText === original ? null : newText;
+}
+
+/** 与加载时同一套校验，判断对象是否提供某阈值的数值。 */
+function providesThresholdValue(
+	obj: Record<string, unknown> | null,
+	valueField: "percentThreshold" | "usedTokensThreshold",
+): boolean {
+	return obj !== null && parseConfigFile(obj, "global", [])[valueField] !== undefined;
 }
 
 /**
@@ -157,41 +185,25 @@ export function applyThresholdToggle(
 ): ThresholdToggleResult {
 	const meta = THRESHOLD_TARGETS[target];
 
-	const parseFile = (text: string | null, name: string): { value: Record<string, unknown> | null; error?: string } => {
-		if (text === null) {
-			return { value: null };
-		}
-		try {
-			const parsed: unknown = JSON.parse(text);
-			return { value: isPlainObject(parsed) ? parsed : null };
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			return { value: null, error: `${name}配置 JSON 解析失败（${reason}），请先手动修复后再用命令开关。` };
-		}
-	};
-
-	const global = parseFile(globalText, "全局");
+	const global = parseConfigText(globalText, "全局");
 	if (global.error) {
 		return { global: null, project: null, error: global.error };
 	}
-	const project = parseFile(projectText, "项目");
+	const project = parseConfigText(projectText, "项目");
 	if (project.error) {
 		return { global: null, project: null, error: project.error };
 	}
 
-	// 与加载时同一套校验，判断哪份文件提供该阈值的数值（issues 仅用于收集，这里丢弃）。
-	const providesValue = (obj: Record<string, unknown> | null): boolean =>
-		obj !== null && parseConfigFile(obj, "global", [])[meta.valueField] !== undefined;
-	const source: "global" | "project" | null = providesValue(project.value)
+	const source: "global" | "project" | null = providesThresholdValue(project.value, meta.valueField)
 		? "project"
-		: providesValue(global.value)
+		: providesThresholdValue(global.value, meta.valueField)
 			? "global"
 			: null;
 	if (!source) {
 		return {
 			global: null,
 			project: null,
-			error: `${meta.label}未配置数值，请先在配置文件中设置 ${meta.valueField} 后再用命令开关。`,
+			error: `${meta.label}未配置数值，可先用 /compact-toggle ${target} <数值> 设置，或直接编辑配置文件。`,
 		};
 	}
 
@@ -204,11 +216,59 @@ export function applyThresholdToggle(
 		if (!next && isSource) {
 			clone[meta.flagField] = false;
 		}
-		if (text === null && Object.keys(clone).length === 0) {
+		return serializeConfigText(clone, text);
+	};
+
+	return {
+		global: build(globalText, global.value, source === "global"),
+		project: build(projectText, project.value, source === "project"),
+	};
+}
+
+/**
+ * 计算"设置某个阈值数值"后的两份配置文件文本。
+ *
+ * 数值写入提供该阈值数值的文件（项目优先）；两份文件均未配置时写入项目
+ * 配置（文件不存在则由调用方创建）。同时删除两份文件中的开关字段（恢复
+ * 默认开启），保证新设置的数值立即参与比较。文本无变化时返回 null。
+ *
+ * 参数为文件原始文本，null 表示文件不存在。
+ */
+export function applyThresholdValue(
+	globalText: string | null,
+	projectText: string | null,
+	target: ThresholdTarget,
+	value: number,
+): ThresholdToggleResult {
+	const meta = THRESHOLD_TARGETS[target];
+
+	const global = parseConfigText(globalText, "全局");
+	if (global.error) {
+		return { global: null, project: null, error: global.error };
+	}
+	const project = parseConfigText(projectText, "项目");
+	if (project.error) {
+		return { global: null, project: null, error: project.error };
+	}
+
+	// 未配置过数值时落到项目配置：项目优先原则下保证至少本项目生效。
+	const source: "global" | "project" = providesThresholdValue(project.value, meta.valueField)
+		? "project"
+		: providesThresholdValue(global.value, meta.valueField)
+			? "global"
+			: "project";
+
+	const build = (text: string | null, obj: Record<string, unknown> | null, isSource: boolean): string | null => {
+		// 非来源文件不存在时不创建；来源文件不存在仅在项目侧发生（新建配置）。
+		if (!obj && !isSource) {
 			return null;
 		}
-		const newText = `${JSON.stringify(clone, null, 2)}\n`;
-		return newText === text ? null : newText;
+		const clone = { ...(obj ?? {}) };
+		delete clone[meta.flagField];
+		if (isSource) {
+			clone[meta.valueField] = value;
+		}
+		return serializeConfigText(clone, text);
 	};
 
 	return {

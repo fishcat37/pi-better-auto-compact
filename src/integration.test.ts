@@ -233,6 +233,53 @@ describe("扩展入口", () => {
 		assert.equal(onRun.getCompactCalls(), 1);
 	});
 
+	it("compact-toggle args 设置数值：写入配置文件并本次会话立即生效", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 150_000 });
+		const { commands, agentEnd } = await setupExtension(cwd);
+		const toggle = commands.get("compact-toggle")!;
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+
+		await toggle.handler("used 240000", ctx);
+		assert.ok(notifications.some((n) => n.includes("已设为 240,000 tokens") && n.includes("立即生效")));
+		assert.deepEqual(JSON.parse(readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8")), {
+			usedTokensThreshold: 240_000,
+		});
+		// 新值立即生效：160k 超过旧值 150k（会触发），但未到新值 240k，不触发
+		const run = makeCtx(cwd, { tokens: 160_000, contextWindow: 200_000 });
+		await agentEnd(agentEndEvent(), run.ctx);
+		assert.equal(run.getCompactCalls(), 0);
+	});
+
+	it("compact-toggle args 设置数值：均未配置时创建项目配置并生效", async () => {
+		const cwd = makeCwd(null);
+		const { commands, agentEnd } = await setupExtension(cwd);
+		const toggle = commands.get("compact-toggle")!;
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+
+		await toggle.handler("percent 50", ctx);
+		assert.ok(notifications.some((n) => n.includes("已设为 50%") && n.includes("立即生效")));
+		assert.deepEqual(JSON.parse(readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8")), { percentThreshold: 50 });
+		// 立即生效：120k 超过 50% 阈值（100k），由扩展触发 compact
+		const run = makeCtx(cwd, { tokens: 120_000, contextWindow: 200_000 });
+		await agentEnd(agentEndEvent(), run.ctx);
+		assert.equal(run.getCompactCalls(), 1);
+	});
+
+	it("compact-toggle args 设置数值：越界值提示且不改动配置", async () => {
+		const cwd = makeCwd({ percentThreshold: 80, usedTokensThreshold: 110_000 });
+		const { commands } = await setupExtension(cwd);
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+
+		await commands.get("compact-toggle")!.handler("percent 150", ctx);
+		assert.ok(notifications.some((n) => n.includes("必须是 (0, 100] 内的数字")));
+		await commands.get("compact-toggle")!.handler("used 110.5", ctx);
+		assert.ok(notifications.some((n) => n.includes("必须是正整数")));
+		assert.deepEqual(JSON.parse(readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8")), {
+			percentThreshold: 80,
+			usedTokensThreshold: 110_000,
+		});
+	});
+
 	it("compact-toggle 非法参数提示用法，不改动配置", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
 		const { commands } = await setupExtension(cwd);

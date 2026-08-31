@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyThresholdToggle, mergeConfigs, type ConfigIssue } from "./config.ts";
+import { applyThresholdToggle, applyThresholdValue, mergeConfigs, type ConfigIssue } from "./config.ts";
 import { computeThresholds, isOverThreshold } from "./thresholds.ts";
 
 const WINDOW = 200_000;
@@ -250,5 +250,46 @@ describe("applyThresholdToggle", () => {
 		assert.equal(result.error, undefined);
 		assert.ok(result.global !== null);
 		assert.deepEqual(JSON.parse(result.global), { usedTokensThreshold: 110_000, usedTokensEnabled: false });
+	});
+});
+
+describe("applyThresholdValue", () => {
+	const format = (obj: Record<string, unknown>) => `${JSON.stringify(obj, null, 2)}\n`;
+
+	it("项目已配置数值时更新项目文件，并清除其中的开关字段", () => {
+		const result = applyThresholdValue(format({ percentThreshold: 80 }), format({ percentThreshold: 90, percentEnabled: false }), "percent", 70);
+		assert.equal(result.error, undefined);
+		assert.equal(result.global, null);
+		assert.ok(result.project !== null);
+		assert.deepEqual(JSON.parse(result.project), { percentThreshold: 70 });
+	});
+
+	it("仅全局配置数值时更新全局文件", () => {
+		const result = applyThresholdValue(format({ usedTokensThreshold: 110_000 }), null, "used", 240_000);
+		assert.equal(result.error, undefined);
+		assert.ok(result.global !== null);
+		assert.deepEqual(JSON.parse(result.global), { usedTokensThreshold: 240_000 });
+		assert.equal(result.project, null);
+	});
+
+	it("两份文件均未配置时写入项目配置（新建），全局开关字段被清理", () => {
+		const result = applyThresholdValue(format({ percentEnabled: false }), null, "percent", 90);
+		assert.equal(result.error, undefined);
+		assert.ok(result.global !== null);
+		assert.deepEqual(JSON.parse(result.global), {});
+		assert.ok(result.project !== null);
+		assert.deepEqual(JSON.parse(result.project), { percentThreshold: 90 });
+	});
+
+	it("值相同且无开关字段残留时不写文件", () => {
+		const result = applyThresholdValue(format({ percentThreshold: 90 }), null, "percent", 90);
+		assert.equal(result.error, undefined);
+		assert.equal(result.global, null);
+		assert.equal(result.project, null);
+	});
+
+	it("JSON 损坏时报错", () => {
+		const result = applyThresholdValue("not json", null, "percent", 90);
+		assert.ok(result.error?.includes("JSON 解析失败"));
 	});
 });

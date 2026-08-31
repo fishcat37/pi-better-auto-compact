@@ -11,11 +11,13 @@
  * 在与原生相同的两处检查点（agent run 完整结束后、发送新消息前）检查用量
  * 并调用 ctx.compact()，循环中途（工具调用轮次之间）不检查、不打断。
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	applyThresholdToggle,
+	applyThresholdValue,
 	loadConfig,
 	THRESHOLD_TARGETS,
 	type BetterAutoCompactConfig,
@@ -163,6 +165,25 @@ export default function (pi: ExtensionAPI) {
 		return target === "percent" ? `${value}%` : `${formatTokens(value)} tokens`;
 	};
 
+	/** 阈值数值的展示文本（写入提示与"无需修改"提示共用）。 */
+	const describeValueLiteral = (target: ThresholdTarget, value: number): string =>
+		target === "percent" ? `${value}%` : `${formatTokens(value)} tokens`;
+
+	/** 把 applyThreshold* 的结果写回文件；项目配置目录不存在时自动创建。 */
+	const writeToggleResult = (result: { global: string | null; project: string | null }): string[] => {
+		const written: string[] = [];
+		if (result.global !== null) {
+			writeFileSync(configPaths.global, result.global);
+			written.push(`全局 ${configPaths.global}`);
+		}
+		if (result.project !== null) {
+			mkdirSync(dirname(configPaths.project), { recursive: true });
+			writeFileSync(configPaths.project, result.project);
+			written.push(`项目 ${configPaths.project}`);
+		}
+		return written;
+	};
+
 	/**
 	 * 翻转阈值开关：写配置文件并重载内存配置，本次会话立即生效。
 	 * 开关字段写在提供数值的文件里（项目优先），见 applyThresholdToggle。
@@ -173,15 +194,7 @@ export default function (pi: ExtensionAPI) {
 		if (result.error) {
 			return { ok: false, message: `${EXTENSION_NAME}：${result.error}` };
 		}
-		const written: string[] = [];
-		if (result.global !== null) {
-			writeFileSync(configPaths.global, result.global);
-			written.push(`全局 ${configPaths.global}`);
-		}
-		if (result.project !== null) {
-			writeFileSync(configPaths.project, result.project);
-			written.push(`项目 ${configPaths.project}`);
-		}
+		const written = writeToggleResult(result);
 		if (written.length === 0) {
 			return { ok: true, message: `${meta.label}已经是${next ? "开启" : "关闭"}状态，无需修改。` };
 		}
@@ -190,7 +203,32 @@ export default function (pi: ExtensionAPI) {
 		return { ok: true, message: `${meta.label}已${next ? "开启" : "关闭"}，写入 ${written.join("、")}，本次会话立即生效。${suffix}` };
 	};
 
-	const parseToggleArgs = (args: string): { target: ThresholdTarget; next: boolean } | { error: string } => {
+	/**
+	 * 设置阈值数值：写配置文件并重载内存配置，本次会话立即生效。
+	 * 数值写在提供数值的文件里（项目优先，均未配置时新建项目配置），
+	 * 见 applyThresholdValue。
+	 */
+	const applyValue = (cwd: string, target: ThresholdTarget, value: number): { ok: boolean; message: string } => {
+		const meta = THRESHOLD_TARGETS[target];
+		const result = applyThresholdValue(readTextIfExists(configPaths.global), readTextIfExists(configPaths.project), target, value);
+		if (result.error) {
+			return { ok: false, message: `${EXTENSION_NAME}：${result.error}` };
+		}
+		const written = writeToggleResult(result);
+		if (written.length === 0) {
+			return { ok: true, message: `${meta.label}已经是 ${describeValueLiteral(target, value)}，无需修改。` };
+		}
+		reloadConfig(cwd);
+		const suffix = config.enabled ? "" : "（注意：总开关 enabled 当前为 false，阈值不会参与比较。）";
+		return {
+			ok: true,
+			message: `${meta.label}已设为 ${describeValueLiteral(target, value)}，写入 ${written.join("、")}，本次会话立即生效。${suffix}`,
+		};
+	};
+
+	const parseToggleArgs = (
+		args: string,
+	): { target: ThresholdTarget; next: boolean } | { target: ThresholdTarget; value: number } | { error: string } => {
 		const tokens = args.toLowerCase().split(/\s+/);
 		const targetMap: Record<string, ThresholdTarget> = {
 			percent: "percent",
@@ -204,11 +242,22 @@ export default function (pi: ExtensionAPI) {
 		if (!target) {
 			return { error: `无法识别阈值 "${tokens[0] ?? ""}"，可选 percent / used。` };
 		}
-		const state = tokens[1];
-		if (state !== "on" && state !== "off") {
-			return { error: `无法识别开关状态 "${state ?? ""}"，可选 on / off。` };
+		const arg = tokens[1];
+		if (arg === "on" || arg === "off") {
+			return { target, next: arg === "on" };
 		}
-		return { target, next: state === "on" };
+		const value = Number(arg);
+		if (arg === undefined || arg === "" || !Number.isFinite(value)) {
+			return { error: `无法识别参数 "${arg ?? ""}"，可用 on / off 或数值（如 ${target === "percent" ? "/compact-toggle percent 90" : "/compact-toggle used 240000"}）。` };
+		}
+		if (target === "percent") {
+			if (!(value > 0 && value <= 100)) {
+				return { error: `percentThreshold 必须是 (0, 100] 内的数字，收到 "${arg}"。` };
+			}
+		} else if (!(Number.isInteger(value) && value > 0)) {
+			return { error: `usedTokensThreshold 必须是正整数，收到 "${arg}"（如 240000）。` };
+		}
+		return { target, value };
 	};
 
 	pi.registerCommand("compact-thresholds", {
@@ -268,13 +317,15 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("compact-toggle", {
-		description: "开关 auto-compact 补充阈值（写入配置文件，本次会话立即生效，无需 /reload）",
+		description: "开关或设置 auto-compact 补充阈值（写入配置文件，本次会话立即生效，无需 /reload）",
 		getArgumentCompletions: (argumentPrefix) => {
 			const items = [
 				{ value: "percent on", label: "percent on", description: "开启百分比阈值" },
 				{ value: "percent off", label: "percent off", description: "关闭百分比阈值" },
+				{ value: "percent ", label: "percent <0-100>", description: "设置百分比阈值数值，如 90" },
 				{ value: "used on", label: "used on", description: "开启已用 token 阈值" },
 				{ value: "used off", label: "used off", description: "关闭已用 token 阈值" },
+				{ value: "used ", label: "used <正整数>", description: "设置已用 token 阈值数值，如 240000" },
 			];
 			const prefix = argumentPrefix.trim().toLowerCase();
 			const filtered = items.filter((item) => item.value.startsWith(prefix));
@@ -285,15 +336,16 @@ export default function (pi: ExtensionAPI) {
 			if (trimmed) {
 				const parsed = parseToggleArgs(trimmed);
 				if ("error" in parsed) {
-					ctx.ui.notify(`${EXTENSION_NAME}：${parsed.error}\n用法：/compact-toggle percent|used on|off，无参数时打开交互菜单。`, "warning");
+					ctx.ui.notify(`${EXTENSION_NAME}：${parsed.error}\n用法：/compact-toggle percent|used on|off|<数值>，无参数时打开交互菜单。`, "warning");
 					return;
 				}
-				const outcome = applyToggle(ctx.cwd, parsed.target, parsed.next);
+				const outcome =
+					"value" in parsed ? applyValue(ctx.cwd, parsed.target, parsed.value) : applyToggle(ctx.cwd, parsed.target, parsed.next);
 				ctx.ui.notify(outcome.message, outcome.ok ? "info" : "warning");
 				return;
 			}
 			if (!ctx.hasUI) {
-				ctx.ui.notify(`${EXTENSION_NAME}：当前模式无交互界面，请使用参数形式 /compact-toggle percent|used on|off`, "warning");
+				ctx.ui.notify(`${EXTENSION_NAME}：当前模式无交互界面，请使用参数形式 /compact-toggle percent|used on|off|<数值>`, "warning");
 				return;
 			}
 			for (;;) {
@@ -321,7 +373,9 @@ export default function (pi: ExtensionAPI) {
 				if (!action.configured) {
 					const meta = THRESHOLD_TARGETS[action.target];
 					ctx.ui.notify(
-						`${EXTENSION_NAME}：${meta.label}未配置数值，请先在 ${configPaths.global} 或 ${configPaths.project} 中设置 ${meta.valueField}。`,
+						`${EXTENSION_NAME}：${meta.label}未配置数值，可执行 /compact-toggle ${action.target} <数值> 设置（${
+							action.target === "percent" ? "如 /compact-toggle percent 90" : "如 /compact-toggle used 240000"
+						}）。`,
 						"warning",
 					);
 					continue;
