@@ -280,6 +280,18 @@ describe("扩展入口", () => {
 		});
 	});
 
+	it("compact-toggle args 设置数值：项目配置根不是对象时报错且不改动文件", async () => {
+		const cwd = makeCwd(null);
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "better-auto-compact.json"), "[1, 2]");
+		const { commands } = await setupExtension(cwd);
+		const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+
+		await commands.get("compact-toggle")!.handler("used 240000", ctx);
+		assert.ok(notifications.some((n) => n.includes("必须是 JSON 对象")));
+		assert.equal(readFileSync(join(cwd, ".pi", "better-auto-compact.json"), "utf-8"), "[1, 2]");
+	});
+
 	it("compact-toggle 非法参数提示用法，不改动配置", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
 		const { commands } = await setupExtension(cwd);

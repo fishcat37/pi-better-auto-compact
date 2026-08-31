@@ -257,6 +257,11 @@ export function applyThresholdValue(
 		: providesThresholdValue(global.value, meta.valueField)
 			? "global"
 			: "project";
+	// 项目文件存在但根不是 JSON 对象（被加载时忽略）时不静默覆盖，报错交给用户处理；
+	// 仅当文件不存在时才允许新建。
+	if (source === "project" && project.value === null && projectText !== null) {
+		return { global: null, project: null, error: "项目配置内容必须是 JSON 对象，请先手动修复后再用命令设置数值。" };
+	}
 
 	const build = (text: string | null, obj: Record<string, unknown> | null, isSource: boolean): string | null => {
 		// 非来源文件不存在时不创建；来源文件不存在仅在项目侧发生（新建配置）。

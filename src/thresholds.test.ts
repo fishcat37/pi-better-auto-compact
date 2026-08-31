@@ -292,4 +292,20 @@ describe("applyThresholdValue", () => {
 		const result = applyThresholdValue("not json", null, "percent", 90);
 		assert.ok(result.error?.includes("JSON 解析失败"));
 	});
+
+	it("项目文件存在但根不是对象时报错，不覆盖原内容", () => {
+		for (const broken of ["[1, 2]", "null", '"foo"']) {
+			const result = applyThresholdValue(null, broken, "percent", 90);
+			assert.ok(result.error?.includes("必须是 JSON 对象"), `broken=${broken}`);
+			assert.equal(result.project, null);
+		}
+	});
+
+	it("项目文件根不是对象但全局有值时只更新全局，不碰项目文件", () => {
+		const result = applyThresholdValue(format({ usedTokensThreshold: 110_000 }), "[1, 2]", "used", 240_000);
+		assert.equal(result.error, undefined);
+		assert.ok(result.global !== null);
+		assert.deepEqual(JSON.parse(result.global), { usedTokensThreshold: 240_000 });
+		assert.equal(result.project, null);
+	});
 });
