@@ -97,10 +97,10 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 
 ## 行为说明
 
-- **检查时机与 pi 原生一致**：agent run 完全 settle 后（重试、排队续跑、原生压缩检查都已结束）、发送新消息前各检查一次，循环中途（工具调用轮次之间）不检查、不打断；每个检查点都会等压缩完成才返回，发送前检查点还会先等待仍在进行的压缩，因此新消息总是在压缩完成后才发出，与原生顺序相同。用户主动中断的 run 跳过检查，由发送新消息前的检查点兜底；compact 失败后重发消息会立即重试。
+- **检查时机尽量贴近 pi 生命周期**：`turn_end` 之后的下一次 `context` 事件会在下一次 LLM 请求前检查用量，覆盖常见的工具链 continuation 场景；终止型 turn 没有该 continuation。扩展仍会在 agent run 完全 settle 后、发送新的用户消息前检查。中途路径无法保留原始 agent run：`ctx.compact()` 是 pi 的 manual compaction API，会中断当前 run。压缩成功或失败后，扩展都会通过 `triggerTurn: true` 发送一条隐藏 custom message，启动一次新的 continuation run。因此旧 run 会留下 `aborted` assistant 记录，会话中也会多一条隐藏 continuation 消息。中途事件处理器不会等待 compact，避免 `ctx.compact()` 与 `waitForIdle()` 形成死锁；settled 和发送前检查点仍会等待压缩完成。
 - **只在需要时接管**：仅当配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值时，扩展才调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
-- **压缩本身走 pi 原生路径**：与原生 auto-compact 使用同一个切点计算和默认摘要生成器，不注入自定义指令，会话中的 compaction 记录内容相同。唯一差异：pi 的 API 会把 `ctx.compact()` 标记为手动触发，因此压缩进行中状态条显示 "Compacting context..."（原生自动压缩显示 "Auto-compacting..."），压缩结果不受影响。
-- **resume 行为与原生一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
+- **压缩使用 pi 的原生实现，但由扩展负责重启 run**：仍使用相同的切点计算和默认摘要生成器，不注入自定义指令。但 `ctx.compact()` 在 pi 中属于 manual compaction，会中断活跃 run，状态条显示 "Compacting context..."。回调完成后通过隐藏 continuation 消息启动新的 run，压缩失败也会恢复一次。这是扩展级近似实现，不是 pi 内部自动压缩所使用的同一 run continuation。
+- **resume 行为保持一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
 - **触发提示**：触发时提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；无 UI 模式下静默。
 
 ## 开发

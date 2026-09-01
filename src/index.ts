@@ -7,11 +7,14 @@
  * - percentThreshold：已用上下文达到模型上下文窗口的百分之多少
  * - usedTokensThreshold：已用上下文超过固定值（如 240000）
  *
- * 内置阈值由 pi 自身处理；本扩展只在存在严格更低的阈值时接管，
- * 在与原生等价的两处检查点（agent run 完全 settle 后、发送新消息前）检查用量，
- * 循环中途（工具调用轮次之间）不检查、不打断。触发后经 ctx.compact() 压缩，
- * 并等待压缩完成才从检查点返回——原生发送前检查点也是压缩完成后才发送，
- * 保证压缩不会与紧随其后启动的新 turn 并发。
+ * 内置阈值由 pi 自身处理；本扩展只在存在严格更低的阈值时接管。
+ * 为尽量接近原生工具链中的检查时机，扩展会在 turn_end 后紧随的 context 事件中检查：
+ * 此时本轮 assistant 消息和 tool results 已写入上下文，下一次 LLM 请求尚未开始。
+ *
+ * 公开扩展 API 没有原生的 prepareNextTurnWithContext 自动压缩入口。ctx.compact()
+ * 走 manual compaction，会 abort 当前 agent run，不能恢复原 run；因此本扩展压缩
+ * 完成（或失败）后会发送一条隐藏 custom message，启动新的 continuation run。这是
+ * 扩展级近似实现，不等同于 pi 在同一个 agent run 内的原生自动压缩。
  *
  * 检查点不能放在 agent_end：agent_end 的扩展分发发生在 agent run 收尾期间
  * （_isAgentRunActive 仍为 true），此时 ctx.compact() 第一步 abort() 里的
@@ -19,8 +22,8 @@
  * 循环等待（死锁）。agent_settled 在 run 彻底收尾后发出，isIdle 已为 true，
  * 调用 compact() 安全。
  *
- * 与原生的已知差异：ctx.compact() 是 pi 的 manual compaction 入口，compaction
- * 事件的 reason 为 "manual"（原生自动压缩为 "threshold"），状态条文案随之不同。
+ * agent_settled 和 before_agent_start 仍保留，分别覆盖 run 完全结束和新用户消息
+ * 进入前的安全检查；中途触发路径不会在事件处理器中等待 compact。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -38,6 +41,9 @@ import {
 import { computeThresholds, isOverThreshold, type BuiltInCompactionSettings, type EffectiveThreshold } from "./thresholds.ts";
 
 const EXTENSION_NAME = "better-auto-compact";
+const CONTINUATION_MESSAGE_TYPE = "better-auto-compact-continuation";
+const CONTINUATION_MESSAGE =
+	"The previous agent run was interrupted for context compaction. Continue the user's pending task from the compacted conversation context, including the tool results already present.";
 
 export default function (pi: ExtensionAPI) {
 	let config: BetterAutoCompactConfig = { enabled: true };
@@ -46,8 +52,10 @@ export default function (pi: ExtensionAPI) {
 	let builtInSettings: BuiltInCompactionSettings = { enabled: true, reserveTokens: 16384 };
 	/** 进行中的压缩 promise；null 表示当前没有压缩在进行。 */
 	let inFlight: Promise<boolean> | null = null;
-	/** 最近一次 run 是否被用户主动中断（stopReason aborted）。 */
+	/** 最近一次 run 是否被中断（包括本扩展发起的 manual compaction）。 */
 	let lastRunAborted = false;
+	/** 已结束一个 turn，下一次 context 事件才是可能存在的工具链 continuation。 */
+	let checkBeforeContinuation = false;
 
 	const formatTokens = (n: number): string => n.toLocaleString("en-US");
 
@@ -87,15 +95,15 @@ export default function (pi: ExtensionAPI) {
 		};
 	};
 
-	const triggerCompaction = (ctx: ExtensionContext, reason: string): Promise<boolean> => {
+	const triggerCompaction = (ctx: ExtensionContext, reason: string, resumeAfterCompact: boolean): Promise<boolean> => {
 		// 压缩过程与结果由 pi 原生呈现（compaction 事件）；这里只提示触发原因
 		// （哪个阈值生效），这是原生没有的信息。
 		if (ctx.hasUI) {
 			ctx.ui.notify(`${EXTENSION_NAME}：${reason}，开始 compact`, "info");
 		}
 		// ctx.compact 是即发即弃 API（返回 void，仅以回调通知结果），包成 Promise
-		// 让检查点能阻塞到压缩结束；onError 里 "Already compacted" / "Nothing to
-		// compact" 属已压缩/无可压缩的正常情况，与其余失败一并静默处理。
+		// 供安全检查点等待。中途 context 检查不能 await：manual compact 会 abort 当前
+		// run 并等待 idle，等待会让该 run 无法结束。
 		const promise = new Promise<boolean>((resolve) => {
 			let settled = false;
 			const settle = (ok: boolean): void => {
@@ -121,46 +129,82 @@ export default function (pi: ExtensionAPI) {
 				inFlight = null;
 			}
 		});
+		if (resumeAfterCompact) {
+			// tracked 已先清理 inFlight；排到微任务可避免在 compact 回调的调用栈中
+			// 启动新的 agent run。失败也继续，避免把用户任务永久截断。
+			void tracked.then(() => {
+				queueMicrotask(() => {
+					try {
+						pi.sendMessage(
+							{
+								customType: CONTINUATION_MESSAGE_TYPE,
+								content: CONTINUATION_MESSAGE,
+								display: false,
+							},
+							{ triggerTurn: true },
+						);
+					} catch {
+						// reload/会话替换后旧 API 可能已失效；错误由 Pi runtime 负责记录。
+					}
+				});
+			});
+		}
 		return tracked;
 	};
 
-	/** 记录进行中的压缩，供 before_agent_start 等待，避免压缩与新 turn 并发。 */
-	const startCompaction = (ctx: ExtensionContext, reason: string): Promise<boolean> => {
-		const promise = triggerCompaction(ctx, reason);
+	/** 记录进行中的压缩；安全检查点可等待，中途检查则在完成后启动新 run。 */
+	const startCompaction = (ctx: ExtensionContext, reason: string, resumeAfterCompact = false): Promise<boolean> => {
+		const promise = triggerCompaction(ctx, reason, resumeAfterCompact);
 		inFlight = promise;
 		return promise;
 	};
 
-	const checkAndTrigger = async (ctx: ExtensionContext): Promise<void> => {
+	const checkAndTrigger = (
+		ctx: ExtensionContext,
+		options: { waitForCompletion?: boolean; resumeAfterCompact?: boolean } = {},
+	): Promise<void> => {
 		if (!config.enabled || inFlight) {
-			return;
+			return Promise.resolve();
 		}
 		const evaluated = evaluate(ctx);
 		if (!evaluated) {
-			return;
+			return Promise.resolve();
 		}
 		const { tokens, effective } = evaluated;
 		if (!effective.handleByExtension || effective.value === null) {
-			return;
+			return Promise.resolve();
 		}
 		// 已越过 pi 内置阈值时交给原生处理（threshold/overflow 全套机制），
 		// 避免与原生的检查点同时触发两条并行的压缩。
 		if (effective.builtInValue !== null && tokens > effective.builtInValue) {
-			return;
+			return Promise.resolve();
 		}
 		if (!isOverThreshold(tokens, effective.value)) {
-			return;
+			return Promise.resolve();
 		}
 		const lowest = effective.candidates[0];
-		await startCompaction(ctx, `已用 ${formatTokens(tokens)} tokens，达到阈值 ${formatTokens(effective.value)}（${lowest?.describe ?? ""}）`);
+		const pending = startCompaction(
+			ctx,
+			`已用 ${formatTokens(tokens)} tokens，达到阈值 ${formatTokens(effective.value)}（${lowest?.describe ?? ""}）`,
+			options.resumeAfterCompact,
+		);
+		return options.waitForCompletion === false ? Promise.resolve() : pending.then(() => undefined);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
 		reloadConfig(ctx.cwd);
 		loadBuiltInSettings(ctx.cwd);
 		inFlight = null;
+		lastRunAborted = false;
+		checkBeforeContinuation = false;
 		// 不在此处检查阈值：pi 原生 resume 已超限会话也不会主动压缩，
 		// 而是等发送新消息前的检查点触发，行为保持一致。
+	});
+
+	// 新 run 不能继承上一个 run 的 turn 标志，否则普通用户 prompt 的首次
+	// context 事件会被误判为工具链 continuation。
+	pi.on("agent_start", () => {
+		checkBeforeContinuation = false;
 	});
 
 	// 只记录中断标志，压缩不在 agent_end 触发：该事件的扩展分发发生在 run
@@ -170,10 +214,27 @@ export default function (pi: ExtensionAPI) {
 		lastRunAborted = lastAssistant?.stopReason === "aborted";
 	});
 
+	// pi 的 turn_end 在 assistant 消息和所有 tool results 已写入后发出；仅留下
+	// 标志，不在这里 compact。是否真有下一次 LLM 请求由紧随其后的 context 事件
+	// 确认，终止型工具批次和最终回答不会误触发 continuation。
+	pi.on("turn_end", () => {
+		checkBeforeContinuation = true;
+	});
+
+	// 这是公开扩展 API 中最接近原生 prepareNextTurnWithContext 的检查点。此处
+	// 不能 await ctx.compact()：manual compact 会等当前 run idle，等待会造成死锁。
+	// 压缩完成或失败后，通过隐藏 custom message 建立新的 continuation run。
+	pi.on("context", (_event, ctx) => {
+		if (!checkBeforeContinuation) {
+			return;
+		}
+		checkBeforeContinuation = false;
+		void checkAndTrigger(ctx, { waitForCompletion: false, resumeAfterCompact: true });
+	});
+
 	// 对应 pi 原生 post-run 检查点：run 完全 settle（重试、排队续跑、原生压缩
 	// 检查都已结束）后触发，此时 isIdle 已为 true，compact() 不会死锁。用户
-	// 主动中断的 run 跳过，对齐原生 post-run 检查的 skipAbortedCheck 行为，
-	// 由发送新消息前的检查点兜底。
+	// 主动中断的 run 跳过，由发送新消息前的检查点兜底。
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (lastRunAborted) {
 			lastRunAborted = false;
@@ -184,8 +245,7 @@ export default function (pi: ExtensionAPI) {
 
 	// 对应 pi 原生"发送新消息前"的检查点：resume 到超限会话、settle 检查被
 	// 跳过（用户中断）或压缩失败遗留的超限状态，在下一次发送消息前兜底处理。
-	// 先等待仍在进行的压缩（run 结束时触发的那次），再检查触发——pi 会等待
-	// 本处理器，因此用户的新消息总是在压缩完成后才发出，与原生顺序一致。
+	// 先等待仍在进行的压缩，再检查触发，避免压缩与新 turn 并发。
 	pi.on("before_agent_start", async (_event, ctx) => {
 		const pending = inFlight;
 		if (pending) {

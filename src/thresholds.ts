@@ -103,7 +103,7 @@ export function computeThresholds(
 
 /**
  * 当前 token 数是否达到阈值需要触发 compact。
- * 与 pi 原生 auto-compact 一致：失败后不设冷却，下一个检查点照常重试。
+ * 阈值比较规则与 pi 原生阈值一致：失败后不设冷却，下一个检查点照常重试。
  */
 export function isOverThreshold(currentTokens: number, threshold: number): boolean {
 	return currentTokens > threshold;
