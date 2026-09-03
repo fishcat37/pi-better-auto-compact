@@ -97,9 +97,9 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 
 ## 行为说明
 
-- **检查时机尽量贴近 pi 生命周期**：`turn_end` 之后的下一次 `context` 事件会在下一次 LLM 请求前检查用量，覆盖常见的工具链 continuation 场景；终止型 turn 没有该 continuation。扩展仍会在 agent run 完全 settle 后、发送新的用户消息前检查。中途路径无法保留原始 agent run：`ctx.compact()` 是 pi 的 manual compaction API，会中断当前 run。压缩成功或失败后，扩展都会通过 `triggerTurn: true` 发送一条隐藏 custom message，启动一次新的 continuation run。因此旧 run 会留下 `aborted` assistant 记录，会话中也会多一条隐藏 continuation 消息。中途事件处理器不会等待 compact，避免 `ctx.compact()` 与 `waitForIdle()` 形成死锁；settled 和发送前检查点仍会等待压缩完成。
+- **只在两个安全检查点检查**：扩展仅在 agent run 完全 `settled` 后，以及用户新请求进入前的 `before_agent_start` 检查用量并调用 `ctx.compact()`。工具链运行中不打断、不注入 continuation message，完全交给 pi 原生 loop 的 auto-compaction 处理。
 - **只在需要时接管**：仅当配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值时，扩展才调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
-- **压缩使用 pi 的原生实现，但由扩展负责重启 run**：仍使用相同的切点计算和默认摘要生成器，不注入自定义指令。但 `ctx.compact()` 在 pi 中属于 manual compaction，会中断活跃 run，状态条显示 "Compacting context..."。回调完成后通过隐藏 continuation 消息启动新的 run，压缩失败也会恢复一次。这是扩展级近似实现，不是 pi 内部自动压缩所使用的同一 run continuation。
+- **安全检查点使用 pi 的原生 compact**：仍使用相同的切点计算和默认摘要生成器，不注入自定义指令。由于这两个检查点都不在活跃 agent loop 中，扩展等待 compact 完成后才放行；不模拟 pi 内部的 loop continuation。
 - **resume 行为保持一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
 - **触发提示**：触发时提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；无 UI 模式下静默。
 

@@ -40,7 +40,7 @@ interface MockContextOptions {
 	compactHoldOpen?: boolean;
 	/** compact 同步抛错（测扩展实例失效等异常路径不悬挂）。 */
 	compactThrows?: boolean;
-	/** compact 异步失败（测中断后的 continuation 仍会恢复）。 */
+	/** compact 异步失败（测安全检查点可重试且不启动 continuation）。 */
 	compactFails?: boolean;
 }
 
@@ -124,12 +124,9 @@ async function setupExtension(cwd: string) {
 	factory(pi);
 
 	const sessionStart = handlers.get("session_start")!;
-	const agentStart = handlers.get("agent_start")!;
 	const agentEnd = handlers.get("agent_end")!;
 	const agentSettled = handlers.get("agent_settled")!;
 	const beforeAgentStart = handlers.get("before_agent_start")!;
-	const turnEnd = handlers.get("turn_end")!;
-	const context = handlers.get("context")!;
 	const { ctx, notifications, getCompactCalls } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
 	await sessionStart({ type: "session_start", reason: "resume" }, ctx);
 	return {
@@ -140,12 +137,9 @@ async function setupExtension(cwd: string) {
 		getCompactCalls,
 		sentMessages,
 		sessionStart,
-		agentStart,
 		agentEnd,
 		agentSettled,
 		beforeAgentStart,
-		turnEnd,
-		context,
 	};
 }
 
@@ -154,88 +148,24 @@ describe("扩展入口", () => {
 		const cwd = makeCwd(null);
 		const { handlers, commands } = await setupExtension(cwd);
 		assert.ok(handlers.has("session_start"));
-		assert.ok(handlers.has("agent_start"));
 		assert.ok(handlers.has("agent_end"));
 		assert.ok(handlers.has("agent_settled"));
 		assert.ok(handlers.has("before_agent_start"));
-		assert.ok(handlers.has("turn_end"));
-		assert.ok(handlers.has("context"));
+		assert.ok(!handlers.has("agent_start"));
+		assert.ok(!handlers.has("turn_end"));
+		assert.ok(!handlers.has("context"));
 		assert.ok(commands.has("compact-thresholds"));
 		assert.ok(commands.has("compact-toggle"));
 	});
 
-	it("初始 context 不触发，turn_end 后的 context 超阈值才触发一次并恢复 continuation", async () => {
+	it("工具链中途不触发 compact，也不发送 continuation message", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { agentStart, turnEnd, context, ctx, getCompactCalls, sentMessages } = await setupExtension(cwd);
-		await agentStart({ type: "agent_start" }, ctx);
-		await context({ type: "context", messages: [] }, ctx);
-		assert.equal(getCompactCalls(), 0);
-
-		const running = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactHoldOpen: true });
-		await turnEnd(
-			{
-				type: "turn_end",
-				turnIndex: 0,
-				message: { role: "assistant", stopReason: "toolUse" },
-				toolResults: [{ role: "toolResult" }],
-			},
-			running.ctx,
-		);
-		const contextResult = context({ type: "context", messages: [] }, running.ctx);
-		assert.equal(contextResult, undefined, "中途 context 处理器必须立即返回，不能等待 compact");
-		assert.equal(running.getCompactCalls(), 1);
+		const { handlers, sentMessages } = await setupExtension(cwd);
+		// 扩展不监听中途事件，完全交给 pi 原生 loop 的 auto-compaction 兜底。
+		assert.ok(!handlers.has("agent_start"));
+		assert.ok(!handlers.has("turn_end"));
+		assert.ok(!handlers.has("context"));
 		assert.equal(sentMessages.length, 0);
-
-		// 标志已消费；同一轮的重复 context 不得重复 compact。
-		context({ type: "context", messages: [] }, running.ctx);
-		assert.equal(running.getCompactCalls(), 1);
-		running.releaseCompact();
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(sentMessages.length, 1);
-		assert.deepEqual(sentMessages[0]?.options, { triggerTurn: true });
-		assert.deepEqual(sentMessages[0]?.message, {
-			customType: "better-auto-compact-continuation",
-			content: "The previous agent run was interrupted for context compaction. Continue the user's pending task from the compacted conversation context, including the tool results already present.",
-			display: false,
-		});
-	});
-
-	it("终止型 turn 没有后续 context 时不会启动 continuation run", async () => {
-		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { turnEnd, agentStart, context, ctx, getCompactCalls, sentMessages } = await setupExtension(cwd);
-		await turnEnd(
-			{
-				type: "turn_end",
-				turnIndex: 0,
-				message: { role: "assistant", stopReason: "stop" },
-				toolResults: [],
-			},
-			ctx,
-		);
-		await agentStart({ type: "agent_start" }, ctx);
-		await context({ type: "context", messages: [] }, ctx);
-		assert.equal(getCompactCalls(), 0);
-		assert.equal(sentMessages.length, 0);
-	});
-
-	it("中途 compact 失败后仍发送一次 continuation", async () => {
-		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { agentStart, turnEnd, context, sentMessages } = await setupExtension(cwd);
-		const running = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactFails: true });
-		await agentStart({ type: "agent_start" }, running.ctx);
-		await turnEnd(
-			{
-				type: "turn_end",
-				turnIndex: 0,
-				message: { role: "assistant", stopReason: "toolUse" },
-				toolResults: [{ role: "toolResult" }],
-			},
-			running.ctx,
-		);
-		context({ type: "context", messages: [] }, running.ctx);
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(running.getCompactCalls(), 1);
-		assert.equal(sentMessages.length, 1);
 	});
 
 	it("未配置扩展阈值时不接管（pi 内置阈值最低的场景）", async () => {
@@ -260,11 +190,12 @@ describe("扩展入口", () => {
 
 	it("配置 usedTokensThreshold 后超过阈值触发 compact", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { agentEnd, agentSettled } = await setupExtension(cwd);
+		const { agentEnd, agentSettled, sentMessages } = await setupExtension(cwd);
 		const { ctx, getCompactCalls, notifications } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await agentEnd(agentEndEvent(), ctx);
 		await agentSettled(agentSettledEvent, ctx);
 		assert.equal(getCompactCalls(), 1);
+		assert.equal(sentMessages.length, 0);
 		assert.ok(notifications.some((n) => n.includes("115,000") && n.includes("compact")));
 	});
 
@@ -321,10 +252,11 @@ describe("扩展入口", () => {
 
 	it("before_agent_start 等待压缩完成后才返回（压缩完成后新消息才发出）", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { handlers } = await setupExtension(cwd);
+		const { handlers, sentMessages } = await setupExtension(cwd);
 		const { ctx, getCompactCalls, isCompactCompleted } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await handlers.get("before_agent_start")!(beforeAgentStartEvent, ctx);
 		assert.equal(getCompactCalls(), 1);
+		assert.equal(sentMessages.length, 0);
 		assert.ok(isCompactCompleted(), "handler 返回时压缩应已完成");
 	});
 
@@ -380,12 +312,26 @@ describe("扩展入口", () => {
 		assert.equal(getCompactCalls(), 1);
 	});
 
-	it("before_agent_start 时检查，失败遗留的超限立即重试（对应原生发送前检查点）", async () => {
+	it("before_agent_start 时检查并等待 compact（对应原生发送前检查点）", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
 		const { handlers } = await setupExtension(cwd);
 		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await handlers.get("before_agent_start")!(beforeAgentStartEvent, ctx);
 		assert.equal(getCompactCalls(), 1);
+	});
+
+	it("compact 失败后安全检查点可重试，且不发送 continuation", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers, sentMessages } = await setupExtension(cwd);
+		const failed = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactFails: true });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, failed.ctx);
+		assert.equal(failed.getCompactCalls(), 1);
+		assert.equal(sentMessages.length, 0);
+
+		const retry = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, retry.ctx);
+		assert.equal(retry.getCompactCalls(), 1);
+		assert.equal(sentMessages.length, 0);
 	});
 
 	it("compact-thresholds 命令输出阈值汇总", async () => {
