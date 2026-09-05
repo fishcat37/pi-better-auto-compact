@@ -36,6 +36,8 @@ interface MockContextOptions {
 	contextWindow?: number;
 	percent?: number | null;
 	uiAvailable?: boolean;
+	isIdle?: boolean;
+	hasPendingMessages?: boolean;
 	/** UI 通知同步抛错（测结果回调不阻塞检查点）。 */
 	notifyThrows?: boolean;
 	/** compact 回调重复调用（测只结算和通知一次）。 */
@@ -56,6 +58,8 @@ function makeCtx(cwd: string, options: MockContextOptions) {
 	const ctx = {
 		cwd,
 		hasUI: options.uiAvailable ?? true,
+		isIdle: () => options.isIdle ?? true,
+		hasPendingMessages: () => options.hasPendingMessages ?? false,
 		ui: {
 			notify: (message: string) => {
 				if (options.notifyThrows) {
@@ -349,6 +353,23 @@ describe("扩展入口", () => {
 		assert.equal(sentMessages.length, 0);
 	});
 
+	it("任务仍在运行或有待处理消息时检查点不应触发 compact", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { agentEnd, agentSettled, beforeAgentStart } = await setupExtension(cwd);
+		const running = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, isIdle: false });
+
+		await agentEnd(agentEndEvent(), running.ctx);
+		await agentSettled(agentSettledEvent, running.ctx);
+		await beforeAgentStart(beforeAgentStartEvent, running.ctx);
+
+		assert.equal(running.getCompactCalls(), 0);
+		assert.ok(!running.notifications.some((n) => n.includes("compact")));
+
+		const queued = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000, hasPendingMessages: true });
+		await agentSettled(agentSettledEvent, queued.ctx);
+		assert.equal(queued.getCompactCalls(), 0);
+	});
+
 	it("compact 失败时不显示成功提示，而是报告失败", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
 		const { handlers } = await setupExtension(cwd);
@@ -410,9 +431,11 @@ describe("扩展入口", () => {
 
 	it("enabled: false 时完全不动作", async () => {
 		const cwd = makeCwd({ enabled: false, usedTokensThreshold: 110_000 });
-		const { agentEnd } = await setupExtension(cwd);
+		const { agentEnd, agentSettled, beforeAgentStart } = await setupExtension(cwd);
 		const { ctx, getCompactCalls, notifications } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await agentEnd(agentEndEvent(), ctx);
+		await agentSettled(agentSettledEvent, ctx);
+		await beforeAgentStart(beforeAgentStartEvent, ctx);
 		assert.equal(getCompactCalls(), 0);
 		assert.ok(!notifications.some((n) => n.includes("compact")));
 	});

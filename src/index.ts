@@ -135,7 +135,10 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const checkAndTrigger = (ctx: ExtensionContext): Promise<void> => {
-		if (!config.enabled || inFlight) {
+		// agent_settled normally arrives while idle, but another extension may have
+		// started a run or queued a message before this handler executes. Never start
+		// manual compaction while Pi is active; the next safe checkpoint can retry.
+		if (!config.enabled || inFlight || !ctx.isIdle() || ctx.hasPendingMessages()) {
 			return Promise.resolve();
 		}
 		const evaluated = evaluate(ctx);
