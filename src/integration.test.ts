@@ -36,6 +36,10 @@ interface MockContextOptions {
 	contextWindow?: number;
 	percent?: number | null;
 	uiAvailable?: boolean;
+	/** UI 通知同步抛错（测结果回调不阻塞检查点）。 */
+	notifyThrows?: boolean;
+	/** compact 回调重复调用（测只结算和通知一次）。 */
+	compactCallbacksTwice?: boolean;
 	/** 挂起 compact 完成，用 releaseCompact() 手控时机（测 inFlight 与阻塞语义）。 */
 	compactHoldOpen?: boolean;
 	/** compact 同步抛错（测扩展实例失效等异常路径不悬挂）。 */
@@ -54,6 +58,9 @@ function makeCtx(cwd: string, options: MockContextOptions) {
 		hasUI: options.uiAvailable ?? true,
 		ui: {
 			notify: (message: string) => {
+				if (options.notifyThrows) {
+					throw new Error("stale UI");
+				}
 				notifications.push(message);
 			},
 		},
@@ -79,11 +86,18 @@ function makeCtx(cwd: string, options: MockContextOptions) {
 			}
 			queueMicrotask(() => {
 				if (options.compactFails) {
-					compactOptions?.onError?.(new Error("compaction failed"));
+					const error = new Error("compaction failed");
+					compactOptions?.onError?.(error);
+					if (options.compactCallbacksTwice) {
+						compactOptions?.onError?.(error);
+					}
 					return;
 				}
 				compactCompleted = true;
 				compactOptions?.onComplete?.();
+				if (options.compactCallbacksTwice) {
+					compactOptions?.onComplete?.();
+				}
 			});
 		},
 	} as unknown as ExtensionContext;
@@ -127,14 +141,13 @@ async function setupExtension(cwd: string) {
 	const agentEnd = handlers.get("agent_end")!;
 	const agentSettled = handlers.get("agent_settled")!;
 	const beforeAgentStart = handlers.get("before_agent_start")!;
-	const { ctx, notifications, getCompactCalls } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
+	const { ctx, notifications } = makeCtx(cwd, { tokens: 1000, contextWindow: 200_000 });
 	await sessionStart({ type: "session_start", reason: "resume" }, ctx);
 	return {
 		handlers,
 		commands,
 		ctx,
 		notifications,
-		getCompactCalls,
 		sentMessages,
 		sessionStart,
 		agentEnd,
@@ -170,9 +183,9 @@ describe("扩展入口", () => {
 
 	it("未配置扩展阈值时不接管（pi 内置阈值最低的场景）", async () => {
 		const cwd = makeCwd(null);
-		const { agentEnd, agentSettled, getCompactCalls } = await setupExtension(cwd);
+		const { agentEnd, agentSettled } = await setupExtension(cwd);
 		// 150k < 内置阈值 183616 且未配置扩展阈值 → 无扩展阈值可触发
-		const { ctx } = makeCtx(cwd, { tokens: 150_000, contextWindow: 200_000 });
+		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 150_000, contextWindow: 200_000 });
 		await agentEnd(agentEndEvent(), ctx);
 		await agentSettled(agentSettledEvent, ctx);
 		assert.equal(getCompactCalls(), 0);
@@ -180,9 +193,9 @@ describe("扩展入口", () => {
 
 	it("已越过 pi 内置阈值时交给原生处理，扩展不触发", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { agentEnd, agentSettled, getCompactCalls } = await setupExtension(cwd);
+		const { agentEnd, agentSettled } = await setupExtension(cwd);
 		// 190k > 内置阈值 183616 → 原生 threshold/overflow 机制的全责，扩展不动作
-		const { ctx } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
+		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: 190_000, contextWindow: 200_000 });
 		await agentEnd(agentEndEvent(), ctx);
 		await agentSettled(agentSettledEvent, ctx);
 		assert.equal(getCompactCalls(), 0);
@@ -209,9 +222,11 @@ describe("扩展入口", () => {
 		await agentSettled(agentSettledEvent, second.ctx);
 		assert.equal(first.getCompactCalls(), 1);
 		assert.equal(second.getCompactCalls(), 0);
+		assert.equal(first.notifications.length, 0, "压缩未完成前不应显示完成提示");
 		first.releaseCompact();
 		await pending;
 		assert.ok(first.isCompactCompleted());
+		assert.equal(first.notifications.length, 1, "压缩完成后只显示一次结果提示");
 	});
 
 	it("agent_settled 等待压缩完成后才返回（此时调用 compact 不会死锁）", async () => {
@@ -275,8 +290,8 @@ describe("扩展入口", () => {
 
 	it("用量未知时不触发", async () => {
 		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
-		const { agentEnd, agentSettled, getCompactCalls } = await setupExtension(cwd);
-		const { ctx } = makeCtx(cwd, { tokens: null });
+		const { agentEnd, agentSettled } = await setupExtension(cwd);
+		const { ctx, getCompactCalls } = makeCtx(cwd, { tokens: null });
 		await agentEnd(agentEndEvent(), ctx);
 		await agentSettled(agentSettledEvent, ctx);
 		assert.equal(getCompactCalls(), 0);
@@ -344,6 +359,42 @@ describe("扩展入口", () => {
 		assert.ok(failed.notifications.some((n) => n.includes("compact 失败") && n.includes("compaction failed")));
 	});
 
+	it("compact 回调重复时只显示一次并释放 inFlight", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const first = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactCallbacksTwice: true });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, first.ctx);
+		assert.equal(first.getCompactCalls(), 1);
+		assert.equal(first.notifications.length, 1);
+
+		const retry = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, retry.ctx);
+		assert.equal(retry.getCompactCalls(), 1, "重复回调不应让 inFlight 永久占用");
+	});
+
+	it("结果通知抛错时检查点仍返回且下次可重试", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const first = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, notifyThrows: true });
+		await assert.doesNotReject(async () => {
+			await handlers.get("before_agent_start")!(beforeAgentStartEvent, first.ctx);
+		});
+		assert.equal(first.getCompactCalls(), 1);
+
+		const retry = makeCtx(cwd, { tokens: 116_000, contextWindow: 200_000 });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, retry.ctx);
+		assert.equal(retry.getCompactCalls(), 1);
+	});
+
+	it("无 UI 时 compact 结果通知保持静默", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const run = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, uiAvailable: false });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, run.ctx);
+		assert.equal(run.getCompactCalls(), 1);
+		assert.equal(run.notifications.length, 0);
+	});
+
 	it("compact-thresholds 命令输出阈值汇总", async () => {
 		const cwd = makeCwd({ percentThreshold: 80, usedTokensThreshold: 110_000 });
 		const { commands, ctx, notifications } = await setupExtension(cwd);
@@ -359,8 +410,8 @@ describe("扩展入口", () => {
 
 	it("enabled: false 时完全不动作", async () => {
 		const cwd = makeCwd({ enabled: false, usedTokensThreshold: 110_000 });
-		const { agentEnd, getCompactCalls, notifications } = await setupExtension(cwd);
-		const { ctx } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
+		const { agentEnd } = await setupExtension(cwd);
+		const { ctx, getCompactCalls, notifications } = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000 });
 		await agentEnd(agentEndEvent(), ctx);
 		assert.equal(getCompactCalls(), 0);
 		assert.ok(!notifications.some((n) => n.includes("compact")));

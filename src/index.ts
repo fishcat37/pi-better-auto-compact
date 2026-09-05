@@ -82,35 +82,40 @@ export default function (pi: ExtensionAPI) {
 		// 只代表发起尝试，摘要请求可能因网络错误或无可压缩内容而失败。
 		const promise = new Promise<boolean>((resolve) => {
 			let settled = false;
-			const settle = (ok: boolean): void => {
+			const notify = (message: string, type: "info" | "error"): void => {
+				if (!ctx.hasUI) {
+					return;
+				}
+				try {
+					ctx.ui.notify(message, type);
+				} catch {
+					// UI may be stale during reload/session replacement; the compaction
+					// result must still release its waiter in that case.
+				}
+			};
+			const settle = (ok: boolean, notification?: { message: string; type: "info" | "error" }): void => {
 				if (settled) {
 					return;
 				}
 				settled = true;
+				// Resolve before notifying: a notification failure must never leave the
+				// checkpoint waiting forever. The guard also suppresses duplicate callbacks.
 				resolve(ok);
+				if (notification) {
+					notify(notification.message, notification.type);
+				}
 			};
 			try {
 				ctx.compact({
-					onComplete: () => {
-						if (ctx.hasUI) {
-							ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 完成`, "info");
-						}
-						settle(true);
-					},
-					onError: (error) => {
-						if (ctx.hasUI) {
-							ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 失败：${error.message}`, "error");
-						}
-						settle(false);
-					},
+					onComplete: () =>
+						settle(true, { message: `${EXTENSION_NAME}：${reason}，compact 完成`, type: "info" }),
+					onError: (error) =>
+						settle(false, { message: `${EXTENSION_NAME}：${reason}，compact 失败：${error.message}`, type: "error" }),
 				});
 			} catch (error) {
 				// ctx.compact 同步抛错（如扩展实例已被 pi 回收）时不得悬挂等待方。
-				if (ctx.hasUI) {
-					const message = error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 失败：${message}`, "error");
-				}
-				settle(false);
+				const message = error instanceof Error ? error.message : String(error);
+				settle(false, { message: `${EXTENSION_NAME}：${reason}，compact 失败：${message}`, type: "error" });
 			}
 		});
 		const tracked = promise.finally(() => {
