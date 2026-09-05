@@ -101,7 +101,7 @@ Also:
 - **Takes over only when needed**: only when a configured extension threshold is strictly lower than the built-in threshold, and usage has not yet passed the built-in threshold, does the extension call `ctx.compact()`; once past the built-in threshold, pi native (the full threshold/overflow mechanics) takes over.
 - **Safe-checkpoint compaction uses Pi's native implementation**: the same cut-point computation and default summarizer are used, with no custom instructions injected. Because both checkpoints are outside the active agent loop, the extension waits for compaction to finish before allowing the next action; it does not simulate Pi's internal loop continuation.
 - **Resume behavior is preserved**: on session load it only reads the config, no compaction; resuming into an over-limit session waits for the before-send checkpoint.
-- **Trigger notice**: on trigger it prints one line about which threshold fired (information native lacks under lowest-wins semantics); silent in headless mode.
+- **Trigger notice**: after compaction completes it prints one line about which threshold fired (information native lacks under lowest-wins semantics); failures are reported separately, and headless mode stays silent.
 
 ## Development
 

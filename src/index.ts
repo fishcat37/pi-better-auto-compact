@@ -77,13 +77,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const triggerCompaction = (ctx: ExtensionContext, reason: string): Promise<boolean> => {
-		// 压缩过程与结果由 pi 原生呈现（compaction 事件）；这里只提示触发原因
-		// （哪个阈值生效），这是原生没有的信息。
-		if (ctx.hasUI) {
-			ctx.ui.notify(`${EXTENSION_NAME}：${reason}，开始 compact`, "info");
-		}
 		// ctx.compact 是即发即弃 API（返回 void，仅以回调通知结果），包成 Promise
-		// 供两个安全检查点等待压缩完成。
+		// 供两个安全检查点等待压缩完成。通知必须放在回调里：调用 ctx.compact
+		// 只代表发起尝试，摘要请求可能因网络错误或无可压缩内容而失败。
 		const promise = new Promise<boolean>((resolve) => {
 			let settled = false;
 			const settle = (ok: boolean): void => {
@@ -95,11 +91,25 @@ export default function (pi: ExtensionAPI) {
 			};
 			try {
 				ctx.compact({
-					onComplete: () => settle(true),
-					onError: () => settle(false),
+					onComplete: () => {
+						if (ctx.hasUI) {
+							ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 完成`, "info");
+						}
+						settle(true);
+					},
+					onError: (error) => {
+						if (ctx.hasUI) {
+							ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 失败：${error.message}`, "error");
+						}
+						settle(false);
+					},
 				});
-			} catch {
+			} catch (error) {
 				// ctx.compact 同步抛错（如扩展实例已被 pi 回收）时不得悬挂等待方。
+				if (ctx.hasUI) {
+					const message = error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`${EXTENSION_NAME}：${reason}，compact 失败：${message}`, "error");
+				}
 				settle(false);
 			}
 		});

@@ -101,7 +101,7 @@ pi install git:github.com/fishcat37/pi-better-auto-compact
 - **只在需要时接管**：仅当配置的扩展阈值严格低于内置阈值、且已用量尚未越过内置阈值时，扩展才调用 `ctx.compact()`；一旦越过内置阈值，交给 pi 原生（threshold/overflow 全套机制）处理。
 - **安全检查点使用 pi 的原生 compact**：仍使用相同的切点计算和默认摘要生成器，不注入自定义指令。由于这两个检查点都不在活跃 agent loop 中，扩展等待 compact 完成后才放行；不模拟 pi 内部的 loop continuation。
 - **resume 行为保持一致**：加载会话时只读取配置、不压缩；resume 到已超限的会话时，等发送新消息前的检查点才处理。
-- **触发提示**：触发时提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；无 UI 模式下静默。
+- **触发提示**：compact 完成后提示一条"哪个阈值生效"（取最低值语义下原生没有的信息）；compact 失败时单独报告错误，无 UI 模式下静默。
 
 ## 开发
 

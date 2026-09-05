@@ -196,7 +196,7 @@ describe("扩展入口", () => {
 		await agentSettled(agentSettledEvent, ctx);
 		assert.equal(getCompactCalls(), 1);
 		assert.equal(sentMessages.length, 0);
-		assert.ok(notifications.some((n) => n.includes("115,000") && n.includes("compact")));
+		assert.ok(notifications.some((n) => n.includes("115,000") && n.includes("compact 完成")));
 	});
 
 	it("压缩完成前不重复触发（inFlight 期间第二次检查跳过）", async () => {
@@ -332,6 +332,16 @@ describe("扩展入口", () => {
 		await handlers.get("before_agent_start")!(beforeAgentStartEvent, retry.ctx);
 		assert.equal(retry.getCompactCalls(), 1);
 		assert.equal(sentMessages.length, 0);
+	});
+
+	it("compact 失败时不显示成功提示，而是报告失败", async () => {
+		const cwd = makeCwd({ usedTokensThreshold: 110_000 });
+		const { handlers } = await setupExtension(cwd);
+		const failed = makeCtx(cwd, { tokens: 115_000, contextWindow: 200_000, compactFails: true });
+		await handlers.get("before_agent_start")!(beforeAgentStartEvent, failed.ctx);
+
+		assert.ok(!failed.notifications.some((n) => n.includes("开始 compact")));
+		assert.ok(failed.notifications.some((n) => n.includes("compact 失败") && n.includes("compaction failed")));
 	});
 
 	it("compact-thresholds 命令输出阈值汇总", async () => {
